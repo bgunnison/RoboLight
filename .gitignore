@@ -1,0 +1,21 @@
+# Local development and agent metadata
+/.agents/
+/.codex/
+/.venv/
+
+# Downloaded tools and shortcut collections
+/tools/
+/links/
+
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Generated MuJoCo output and logs
+/sim/*.mjb
+/MUJOCO_LOG.TXT
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+*.swp

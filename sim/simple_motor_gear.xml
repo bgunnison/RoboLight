@@ -1,0 +1,222 @@
+<mujoco model="simple_motor_gear">
+  <compiler angle="degree" autolimits="true"/>
+  <option timestep="0.002" gravity="0 0 0"/>
+
+  <default>
+    <geom contype="0" conaffinity="0"/>
+  </default>
+
+  <visual>
+    <global azimuth="135" elevation="-20"/>
+    <headlight ambient="0.34 0.34 0.34" diffuse="0.68 0.68 0.65" specular="0.18 0.18 0.18"/>
+  </visual>
+
+  <asset>
+    <texture name="grid" type="2d" builtin="checker" width="512" height="512"
+             rgb1="0.20 0.22 0.23" rgb2="0.12 0.13 0.14"/>
+    <texture name="left_wall_checker" type="2d" file="assets/left_wall_checker.png"/>
+    <texture name="right_wall_checker" type="2d" file="assets/right_wall_checker.png"/>
+    <texture name="back_wall_checker" type="2d" file="assets/back_wall_checker.png"/>
+    <texture name="ceiling_checker" type="2d" file="assets/ceiling_checker.png"/>
+    <mesh name="left_wall_surface" inertia="shell"
+          vertex="0 -0.32 -0.45  0 0.32 -0.45  0 0.32 0.45  0 -0.32 0.45"
+          texcoord="0 0  1 0  1 1  0 1" face="0 1 2  0 2 3"/>
+    <mesh name="right_wall_surface" inertia="shell"
+          vertex="0 0.32 -0.45  0 -0.32 -0.45  0 -0.32 0.45  0 0.32 0.45"
+          texcoord="0 0  1 0  1 1  0 1" face="0 1 2  0 2 3"/>
+    <mesh name="back_wall_surface" inertia="shell"
+          vertex="-0.39 0 -0.45  0.39 0 -0.45  0.39 0 0.45  -0.39 0 0.45"
+          texcoord="0 0  1 0  1 1  0 1" face="0 1 2  0 2 3"/>
+    <mesh name="ceiling_surface" inertia="shell"
+          vertex="-0.39 -0.32 0  -0.39 0.32 0  0.39 0.32 0  0.39 -0.32 0"
+          texcoord="0 0  1 0  1 1  0 1" face="0 1 2  0 2 3"/>
+    <material name="floor" texture="grid" texrepeat="6 4"/>
+    <material name="base" rgba="0.94 0.94 0.90 1"/>
+    <material name="motor" rgba="0.27 0.45 0.60 1"/>
+    <material name="shaft" rgba="0.65 0.68 0.70 1"/>
+    <material name="gear" rgba="0.90 0.63 0.16 1"/>
+    <material name="gear2" rgba="0.22 0.62 0.42 1"/>
+    <material name="gear3" rgba="0.25 0.48 0.80 1"/>
+    <material name="gear4" rgba="0.58 0.35 0.78 1"/>
+    <material name="gear5" rgba="0.86 0.34 0.50 1"/>
+    <material name="gear6" rgba="0.12 0.66 0.72 1"/>
+    <material name="spool" rgba="0.88 0.46 0.14 1"/>
+    <material name="turntable" rgba="0.24 0.27 0.30 1"/>
+    <material name="timing" rgba="0.36 0.36 0.40 1"/>
+    <material name="belt" rgba="0.04 0.04 0.04 1"/>
+    <material name="arm" rgba="0.70 0.18 0.16 1"/>
+    <material name="arm2" rgba="0.18 0.62 0.24 1"/>
+    <material name="plate" rgba="0.78 0.80 0.82 1"/>
+    <material name="spotlight" rgba="1.00 0.90 0.32 1"/>
+    <material name="mark" rgba="0.95 0.95 0.92 1"/>
+    <material name="left_wall" rgba="0.30 0.43 0.58 1"/>
+    <material name="right_wall" rgba="0.58 0.38 0.28 1"/>
+    <material name="back_wall" rgba="0.36 0.53 0.41 1"/>
+    <material name="ceiling" rgba="0.58 0.60 0.58 1"/>
+    <material name="left_wall_surface" texture="left_wall_checker"/>
+    <material name="right_wall_surface" texture="right_wall_checker"/>
+    <material name="back_wall_surface" texture="back_wall_checker"/>
+    <material name="ceiling_surface" texture="ceiling_checker"/>
+  </asset>
+
+  <worldbody>
+    <light name="key" pos="0.2 -0.5 0.5" dir="-0.2 0.5 -0.7"
+           ambient="0.16 0.16 0.16" diffuse="0.85 0.85 0.80" specular="0.18 0.18 0.18"/>
+    <light name="fill" pos="-0.35 -0.35 0.35" dir="0.6 0.5 -0.5"
+           diffuse="0.45 0.50 0.55" specular="0.10 0.10 0.10"/>
+    <light name="front_soft" pos="0 -0.45 0.16" dir="0 1 -0.1"
+           diffuse="0.22 0.22 0.20" specular="0.03 0.03 0.03"/>
+    <camera name="view" pos="0.080 -1.20 0.430" xyaxes="1 0 0 0 0 1"/>
+
+    <geom name="floor" type="plane" size="0.55 0.35 0.01" material="floor"/>
+    <!-- 0.78 m clear width leaves about one original-base width beside the mechanism. -->
+    <geom name="base" type="box" pos="0.080 0 0.005" size="0.410 0.330 0.005" material="base"/>
+    <geom name="left_wall" type="box" pos="-0.320 0 0.450" size="0.010 0.330 0.450" material="left_wall"/>
+    <geom name="right_wall" type="box" pos="0.480 0 0.450" size="0.010 0.330 0.450" material="right_wall"/>
+    <geom name="back_wall" type="box" pos="0.080 0.320 0.450" size="0.410 0.010 0.450" material="back_wall"/>
+    <geom name="ceiling" type="box" pos="0.080 0 0.910" size="0.410 0.330 0.010" material="ceiling"/>
+    <geom name="left_wall_checker_surface" type="mesh" mesh="left_wall_surface"
+          pos="-0.3095 -0.010 0.450" material="left_wall_surface"/>
+    <geom name="right_wall_checker_surface" type="mesh" mesh="right_wall_surface"
+          pos="0.4695 -0.010 0.450" material="right_wall_surface"/>
+    <geom name="back_wall_checker_surface" type="mesh" mesh="back_wall_surface"
+          pos="0.080 0.3095 0.450" material="back_wall_surface"/>
+    <geom name="ceiling_checker_surface" type="mesh" mesh="ceiling_surface"
+          pos="0.080 -0.010 0.8995" material="ceiling_surface"/>
+
+    <!-- The 20 mm turntable raises and yaws the complete mechanism above the fixed room base. -->
+    <body name="turntable" pos="0 0 0.020">
+      <joint name="turntable_yaw" type="hinge" pos="0.082 -0.118 0" axis="0 0 1"/>
+      <geom name="turntable_disk" type="cylinder" pos="0.082 -0.118 0" size="0.210 0.010" material="turntable"/>
+      <geom name="turntable_mark" type="box" pos="0.1975 -0.118 0.011" size="0.0672 0.008 0.001" material="mark"/>
+
+    <site name="M" pos="-0.070 -0.010 0.125" size="0.001" rgba="1 1 1 0"/>
+    <site name="G1" pos="0.070 -0.105 0.125" size="0.001" rgba="1 1 1 0"/>
+    <site name="G2" pos="0.170 -0.105 0.125" size="0.001" rgba="1 1 1 0"/>
+    <site name="TG1" pos="0.120 -0.106 0.110" size="0.001" rgba="1 1 1 0"/>
+    <site name="TG2" pos="0.120 -0.106 0.210" size="0.001" rgba="1 1 1 0"/>
+    <site name="G3" pos="0.170 -0.145 0.125" size="0.001" rgba="1 1 1 0"/>
+    <site name="G4" pos="0.170 -0.185 0.125" size="0.001" rgba="1 1 1 0"/>
+    <site name="G5" pos="0.170 -0.225 0.125" size="0.001" rgba="1 1 1 0"/>
+    <site name="G6" pos="0.170 -0.265 0.125" size="0.001" rgba="1 1 1 0"/>
+    <site name="TG3" pos="0.120 -0.146 0.110" size="0.001" rgba="1 1 1 0"/>
+    <site name="TG4" pos="0.120 -0.146 0.210" size="0.001" rgba="1 1 1 0"/>
+    <site name="TG5" pos="0.120 -0.158 0.210" size="0.001" rgba="1 1 1 0"/>
+    <site name="TG6" pos="0.120 -0.158 0.360" size="0.001" rgba="1 1 1 0"/>
+
+    <body name="M" pos="0 -0.035 0.080">
+      <geom name="motor_case" type="box" pos="0 0.025 0" size="0.050 0.035 0.070" material="motor"/>
+      <geom name="shaft" type="cylinder" pos="0 -0.020 0" euler="90 0 0" size="0.008 0.030" material="shaft"/>
+
+      <body name="G1" pos="0 -0.055 0">
+        <joint name="gear_hinge" type="hinge" axis="0 1 0"/>
+        <geom name="gear_disk" type="cylinder" pos="0 -0.080 0" euler="90 0 0" size="0.032 0.090" material="gear"/>
+        <geom name="face_mark" type="box" pos="0 -0.171 0.0128" size="0.006 0.002 0.0141" material="mark"/>
+        <geom name="spoke_mark" type="box" pos="0 -0.172 0" size="0.0256 0.002 0.004" material="mark"/>
+      </body>
+    </body>
+
+    <geom name="g2_support" type="box" pos="0.082 -0.055 0.045" size="0.010 0.010 0.035" material="shaft"/>
+    <geom name="g2_axle" type="cylinder" pos="0.082 -0.0775 0.080" euler="90 0 0" size="0.006 0.0225" material="shaft"/>
+    <geom name="tg2_support" type="box" pos="0.082 -0.055 0.130" size="0.010 0.010 0.050" material="shaft"/>
+    <geom name="tg2_axle" type="cylinder" pos="0.082 -0.0805 0.180" euler="90 0 0" size="0.006 0.0255" material="shaft"/>
+    <geom name="belt_left" type="box" pos="0.0645 -0.106 0.130" size="0.002 0.003 0.050" material="belt"/>
+    <geom name="belt_right" type="box" pos="0.0995 -0.106 0.130" size="0.002 0.003 0.050" material="belt"/>
+    <geom name="g3_support" type="box" pos="0.082 -0.095 0.045" size="0.010 0.010 0.035" material="shaft"/>
+    <geom name="g3_axle" type="cylinder" pos="0.082 -0.1175 0.080" euler="90 0 0" size="0.006 0.0225" material="shaft"/>
+    <geom name="g4_support" type="box" pos="0.082 -0.135 0.045" size="0.010 0.010 0.035" material="shaft"/>
+    <geom name="g4_axle" type="cylinder" pos="0.082 -0.1575 0.080" euler="90 0 0" size="0.006 0.0225" material="shaft"/>
+    <geom name="g5_support" type="box" pos="0.082 -0.175 0.045" size="0.010 0.010 0.035" material="shaft"/>
+    <geom name="g5_axle" type="cylinder" pos="0.082 -0.1975 0.080" euler="90 0 0" size="0.006 0.0225" material="shaft"/>
+    <geom name="g6_support" type="box" pos="0.082 -0.215 0.045" size="0.010 0.010 0.035" material="shaft"/>
+    <geom name="g6_axle" type="cylinder" pos="0.082 -0.2375 0.080" euler="90 0 0" size="0.006 0.0225" material="shaft"/>
+    <geom name="tg4_support" type="box" pos="0.082 -0.095 0.130" size="0.010 0.010 0.050" material="shaft"/>
+    <geom name="tg4_axle" type="cylinder" pos="0.082 -0.1205 0.180" euler="90 0 0" size="0.006 0.0255" material="shaft"/>
+    <geom name="belt2_left" type="box" pos="0.0645 -0.146 0.130" size="0.002 0.003 0.050" material="belt"/>
+    <geom name="belt2_right" type="box" pos="0.0995 -0.146 0.130" size="0.002 0.003 0.050" material="belt"/>
+    <body name="G2" pos="0.082 -0.090 0.080">
+      <joint name="g2_hinge" type="hinge" axis="0 1 0"/>
+      <geom name="g2_disk" type="cylinder" euler="90 0 0" size="0.050 0.010" material="gear2"/>
+      <geom name="g2_face_mark" type="box" pos="0 -0.011 0.020" size="0.006 0.002 0.022" material="mark"/>
+      <geom name="g2_spoke_mark" type="box" pos="0 -0.012 0" size="0.040 0.002 0.004" material="mark"/>
+      <geom name="tg1_disk" type="cylinder" pos="0 -0.016 0" euler="90 0 0" size="0.0175 0.006" material="timing"/>
+      <geom name="tg1_face_mark" type="box" pos="0 -0.022 0.007" size="0.004 0.0015 0.0077" material="mark"/>
+      <geom name="tg1_spoke_mark" type="box" pos="0 -0.023 0" size="0.014 0.0015 0.003" material="mark"/>
+    </body>
+
+    <body name="TG2" pos="0.082 -0.106 0.180">
+      <joint name="tg2_hinge" type="hinge" axis="0 1 0"/>
+      <geom name="tg2_disk" type="cylinder" euler="90 0 0" size="0.0175 0.006" material="timing"/>
+      <geom name="tg2_face_mark" type="box" pos="0 -0.007 0.007" size="0.004 0.0015 0.0077" material="mark"/>
+      <geom name="tg2_spoke_mark" type="box" pos="0 -0.008 0" size="0.014 0.0015 0.003" material="mark"/>
+      <geom name="arm1" type="box" pos="0 -0.012 0.075" size="0.006 0.006 0.075" material="arm"/>
+      <geom name="belt3_left" type="box" pos="-0.0175 -0.052 0.075" size="0.002 0.003 0.075" material="belt"/>
+      <geom name="belt3_right" type="box" pos="0.0175 -0.052 0.075" size="0.002 0.003 0.075" material="belt"/>
+      <geom name="arm1_end_axle" type="cylinder" pos="0 -0.032 0.150" euler="90 0 0" size="0.004 0.020" material="shaft"/>
+      <body name="TG6" pos="0 -0.052 0.150">
+        <joint name="tg6_hinge" type="hinge" axis="0 1 0"/>
+        <geom name="tg6_disk" type="cylinder" euler="90 0 0" size="0.0175 0.006" material="timing"/>
+        <geom name="tg6_face_mark" type="box" pos="0 -0.007 0.007" size="0.004 0.0015 0.0077" material="mark"/>
+        <geom name="tg6_spoke_mark" type="box" pos="0 -0.008 0" size="0.014 0.0015 0.003" material="mark"/>
+        <geom name="arm2" type="box" pos="0 -0.012 0.075" size="0.006 0.006 0.075" material="arm2"/>
+        <body name="tilt_plate_body" pos="0 -0.012 0.150">
+          <joint name="plate_x_tilt" type="hinge" axis="1 0 0" range="-45 45"/>
+          <joint name="plate_y_tilt" type="hinge" axis="0 1 0" range="-45 45"/>
+          <geom name="tilt_plate" type="box" pos="0 0 0.003" size="0.025 0.025 0.003" material="plate"/>
+          <geom name="plate_spot_lens" type="sphere" pos="0 0 0.010" size="0.006" material="spotlight"/>
+          <camera name="spotlight_camera" pos="0 0 0.018" xyaxes="1 0 0 0 -1 0" fovy="50"/>
+          <light name="plate_spotlight" pos="0 0 0.014" dir="0 0 1" diffuse="1.0 0.88 0.45"
+                 specular="0.35 0.28 0.12" cutoff="25" attenuation="0.4 0.1 0.02"/>
+        </body>
+      </body>
+    </body>
+
+    <body name="G3" pos="0.082 -0.130 0.080">
+      <joint name="g3_hinge" type="hinge" axis="0 1 0"/>
+      <geom name="g3_disk" type="cylinder" euler="90 0 0" size="0.050 0.010" material="gear3"/>
+      <geom name="g3_face_mark" type="box" pos="0 -0.011 0.020" size="0.006 0.002 0.022" material="mark"/>
+      <geom name="g3_spoke_mark" type="box" pos="0 -0.012 0" size="0.040 0.002 0.004" material="mark"/>
+      <geom name="tg3_disk" type="cylinder" pos="0 -0.016 0" euler="90 0 0" size="0.0175 0.006" material="timing"/>
+      <geom name="tg3_face_mark" type="box" pos="0 -0.022 0.007" size="0.004 0.0015 0.0077" material="mark"/>
+      <geom name="tg3_spoke_mark" type="box" pos="0 -0.023 0" size="0.014 0.0015 0.003" material="mark"/>
+    </body>
+
+    <body name="TG4" pos="0.082 -0.146 0.180">
+      <joint name="tg4_hinge" type="hinge" axis="0 1 0"/>
+      <geom name="tg4_disk" type="cylinder" euler="90 0 0" size="0.0175 0.006" material="timing"/>
+      <geom name="tg4_face_mark" type="box" pos="0 -0.007 0.007" size="0.004 0.0015 0.0077" material="mark"/>
+      <geom name="tg4_spoke_mark" type="box" pos="0 -0.008 0" size="0.014 0.0015 0.003" material="mark"/>
+      <geom name="tg5_disk" type="cylinder" pos="0 -0.012 0" euler="90 0 0" size="0.0175 0.006" material="timing"/>
+      <geom name="tg5_face_mark" type="box" pos="0 -0.019 0.007" size="0.004 0.0015 0.0077" material="mark"/>
+      <geom name="tg5_spoke_mark" type="box" pos="0 -0.020 0" size="0.014 0.0015 0.003" material="mark"/>
+    </body>
+
+    <body name="G4" pos="0.082 -0.170 0.080">
+      <joint name="g4_hinge" type="hinge" axis="0 1 0"/>
+      <geom name="g4_disk" type="cylinder" euler="90 0 0" size="0.050 0.010" material="gear4"/>
+      <geom name="g4_face_mark" type="box" pos="0 -0.011 0.020" size="0.006 0.002 0.022" material="mark"/>
+      <geom name="g4_spoke_mark" type="box" pos="0 -0.012 0" size="0.040 0.002 0.004" material="mark"/>
+      <geom name="g4_spool" type="cylinder" pos="0 -0.017 0" euler="90 0 0" size="0.005 0.006" material="spool"/>
+      <geom name="g4_spool_face_mark" type="box" pos="0 -0.024 0.002" size="0.0015 0.001 0.0022" material="mark"/>
+      <geom name="g4_spool_spoke_mark" type="box" pos="0 -0.025 0" size="0.004 0.001 0.001" material="mark"/>
+    </body>
+
+    <body name="G5" pos="0.082 -0.210 0.080">
+      <joint name="g5_hinge" type="hinge" axis="0 1 0"/>
+      <geom name="g5_disk" type="cylinder" euler="90 0 0" size="0.050 0.010" material="gear5"/>
+      <geom name="g5_face_mark" type="box" pos="0 -0.011 0.020" size="0.006 0.002 0.022" material="mark"/>
+      <geom name="g5_spoke_mark" type="box" pos="0 -0.012 0" size="0.040 0.002 0.004" material="mark"/>
+      <geom name="g5_spool" type="cylinder" pos="0 -0.017 0" euler="90 0 0" size="0.005 0.006" material="spool"/>
+      <geom name="g5_spool_face_mark" type="box" pos="0 -0.024 0.002" size="0.0015 0.001 0.0022" material="mark"/>
+      <geom name="g5_spool_spoke_mark" type="box" pos="0 -0.025 0" size="0.004 0.001 0.001" material="mark"/>
+    </body>
+
+    <body name="G6" pos="0.082 -0.250 0.080">
+      <joint name="g6_hinge" type="hinge" axis="0 1 0"/>
+      <geom name="g6_disk" type="cylinder" euler="90 0 0" size="0.050 0.010" material="gear6"/>
+      <geom name="g6_face_mark" type="box" pos="0 -0.011 0.020" size="0.006 0.002 0.022" material="mark"/>
+      <geom name="g6_spoke_mark" type="box" pos="0 -0.012 0" size="0.040 0.002 0.004" material="mark"/>
+    </body>
+    </body>
+  </worldbody>
+</mujoco>
