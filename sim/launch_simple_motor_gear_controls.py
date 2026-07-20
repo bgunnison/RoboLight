@@ -529,7 +529,7 @@ def main():
     frame.grid(row=0, column=0, sticky="nsew")
 
     pip_frame = ttk.LabelFrame(frame, text="Spotlight camera PIP", padding=6)
-    pip_frame.grid(row=0, column=2, rowspan=20, sticky="n", padx=(16, 0))
+    pip_frame.grid(row=0, column=2, rowspan=18, sticky="n", padx=(16, 0))
     pip_canvas = tk.Canvas(
         pip_frame,
         width=PIP_WIDTH,
@@ -606,34 +606,23 @@ def main():
         pady=(4, 0),
     )
 
-    tilt_x_label = ttk.Label(frame, width=24, text=f"X tilt: {format_degrees(DEFAULT_TILT_DEGREES)} deg")
+    tilt_x_label = ttk.Label(
+        frame,
+        width=24,
+        text=f"X tilt: {format_degrees(DEFAULT_TILT_DEGREES)} deg",
+    )
     tilt_x_label.grid(row=10, column=0, columnspan=2, sticky="w", pady=(10, 0))
-    tilt_x_slider = ttk.Scale(
+    tilt_y_label = ttk.Label(
         frame,
-        from_=MIN_TILT_DEGREES,
-        to=MAX_TILT_DEGREES,
-        variable=tilt_x_var,
-        orient="horizontal",
-        length=260,
+        width=24,
+        text=f"Y tilt: {format_degrees(DEFAULT_TILT_DEGREES)} deg",
     )
-    tilt_x_slider.grid(row=11, column=0, columnspan=2, sticky="ew", pady=(2, 8))
-
-    tilt_y_label = ttk.Label(frame, width=24, text=f"Y tilt: {format_degrees(DEFAULT_TILT_DEGREES)} deg")
-    tilt_y_label.grid(row=12, column=0, columnspan=2, sticky="w")
-    tilt_y_slider = ttk.Scale(
-        frame,
-        from_=MIN_TILT_DEGREES,
-        to=MAX_TILT_DEGREES,
-        variable=tilt_y_var,
-        orient="horizontal",
-        length=260,
-    )
-    tilt_y_slider.grid(row=13, column=0, columnspan=2, sticky="ew", pady=(2, 8))
+    tilt_y_label.grid(row=11, column=0, columnspan=2, sticky="w", pady=(2, 8))
 
     g1_diameter_label = ttk.Label(frame, text="G1 diameter (mm)")
-    g1_diameter_label.grid(row=14, column=0, sticky="w", pady=(10, 0))
+    g1_diameter_label.grid(row=12, column=0, sticky="w", pady=(10, 0))
     g1_diameter_entry = ttk.Entry(frame, textvariable=g1_diameter_entry_var, width=12)
-    g1_diameter_entry.grid(row=14, column=1, sticky="e", pady=(10, 0))
+    g1_diameter_entry.grid(row=12, column=1, sticky="e", pady=(10, 0))
     g1_diameter_slider = ttk.Scale(
         frame,
         from_=MIN_DIAMETER_MM,
@@ -642,12 +631,12 @@ def main():
         orient="horizontal",
         length=260,
     )
-    g1_diameter_slider.grid(row=15, column=0, columnspan=2, sticky="ew", pady=(2, 8))
+    g1_diameter_slider.grid(row=13, column=0, columnspan=2, sticky="ew", pady=(2, 8))
 
     g2_diameter_label = ttk.Label(frame, text="G2-G6 diameter (mm)")
-    g2_diameter_label.grid(row=16, column=0, sticky="w")
+    g2_diameter_label.grid(row=14, column=0, sticky="w")
     g2_diameter_entry = ttk.Entry(frame, textvariable=g2_diameter_entry_var, width=12)
-    g2_diameter_entry.grid(row=16, column=1, sticky="e")
+    g2_diameter_entry.grid(row=14, column=1, sticky="e")
     g2_diameter_slider = ttk.Scale(
         frame,
         from_=MIN_DIAMETER_MM,
@@ -656,12 +645,12 @@ def main():
         orient="horizontal",
         length=260,
     )
-    g2_diameter_slider.grid(row=17, column=0, columnspan=2, sticky="ew", pady=(2, 8))
+    g2_diameter_slider.grid(row=15, column=0, columnspan=2, sticky="ew", pady=(2, 8))
 
     spool_diameter_label = ttk.Label(frame, text="Spool diameter (mm)")
-    spool_diameter_label.grid(row=18, column=0, sticky="w")
+    spool_diameter_label.grid(row=16, column=0, sticky="w")
     spool_diameter_entry = ttk.Entry(frame, textvariable=spool_diameter_entry_var, width=12)
-    spool_diameter_entry.grid(row=18, column=1, sticky="e")
+    spool_diameter_entry.grid(row=16, column=1, sticky="e")
     spool_diameter_slider = ttk.Scale(
         frame,
         from_=MIN_SPOOL_DIAMETER_MM,
@@ -670,7 +659,7 @@ def main():
         orient="horizontal",
         length=260,
     )
-    spool_diameter_slider.grid(row=19, column=0, columnspan=2, sticky="ew", pady=(2, 0))
+    spool_diameter_slider.grid(row=17, column=0, columnspan=2, sticky="ew", pady=(2, 0))
 
     def clamp_rotation(value):
         return max(MIN_MOVE_DEGREES, min(MAX_MOVE_DEGREES, value))
@@ -718,8 +707,6 @@ def main():
         return True
 
     rotation_slider.configure(command=update_rotation_entry)
-    tilt_x_slider.configure(command=lambda value: update_tilt_label(tilt_x_label, "X", value))
-    tilt_y_slider.configure(command=lambda value: update_tilt_label(tilt_y_label, "Y", value))
     rotation_entry.bind("<Return>", commit_rotation_entry)
     rotation_entry.bind("<FocusOut>", commit_rotation_entry)
     g1_diameter_slider.configure(command=lambda value: update_diameter_entry(g1_diameter_entry_var, value))
@@ -876,8 +863,6 @@ def main():
             g4_is_engaged = g4_engaged_var.get()
             g5_is_engaged = g5_engaged_var.get()
             g6_is_engaged = g6_engaged_var.get()
-            tilt_y_slider.state(["disabled"] if g4_is_engaged else ["!disabled"])
-            tilt_x_slider.state(["disabled"] if g5_is_engaged else ["!disabled"])
             if not g4_is_engaged:
                 update_tilt_label(tilt_y_label, "Y", tilt_y_var.get())
             if not g5_is_engaged:

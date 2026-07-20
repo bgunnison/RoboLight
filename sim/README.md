@@ -35,7 +35,7 @@ The current starter model is intentionally minimal:
 - the control UI has Arm 1 and Arm 2 checkboxes; Arm 1 starts engaged, Arm 2 starts disengaged
 - `G4 -> Y tilt` and `G5 -> X tilt` selectors independently connect those followers to `G1`
 - `G6 -> turntable` connects the front follower to `G1`; subsequent `G6` rotation yaws the disk and complete mechanism 1:1
-- the X and Y sliders manually position a disengaged axis; while its gear is selected, the slider becomes a driven tilt indicator
+- the UI displays live X and Y tilt readouts; tilt motion is commanded through the G4 and G5 selectors rather than manual sliders
 - the control UI has a position reset button that returns the motor, gears, arms, plate tilt, and turntable yaw to zero
 - startup view faces `G1`, centered, with the gear taking about 1/8 of the view height; camera controls remain enabled
 

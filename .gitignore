@@ -2,6 +2,7 @@
 /.agents/
 /.codex/
 /.venv/
+/.vs/
 
 # Downloaded tools and shortcut collections
 /tools/
