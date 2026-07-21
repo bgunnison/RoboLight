@@ -108,6 +108,14 @@
       <geom name="motor_case" type="box" pos="0 0.025 0" size="0.050 0.035 0.070" material="motor"/>
       <geom name="shaft" type="cylinder" pos="0 -0.020 0" euler="90 0 0" size="0.008 0.030" material="shaft"/>
 
+      <!-- Duplicate lazy-Susan plate. Its bottom touches the motor-case top,
+           and its center/radius track the lower turntable to constrain the
+           arm mechanism between the two plates. -->
+      <geom name="upper_turntable_disk" type="cylinder"
+            pos="0.082 -0.083 0.080" size="0.210 0.010" material="turntable"/>
+      <geom name="upper_turntable_mark" type="box"
+            pos="0.1975 -0.083 0.091" size="0.0672 0.008 0.001" material="mark"/>
+
       <body name="G1" pos="0 -0.055 0">
         <joint name="gear_hinge" type="hinge" axis="0 1 0"/>
         <geom name="gear_disk" type="cylinder" pos="0 -0.080 0" euler="90 0 0" size="0.032 0.090" material="gear"/>

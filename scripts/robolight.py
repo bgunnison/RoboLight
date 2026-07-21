@@ -9,26 +9,43 @@ The mechanical design uses one motor and a selectable transmission. G1 is the
 shared drive gear. Five follower paths operate Arm 1, Arm 2, Y tilt, X tilt, and
 the base turntable. Physical hardware will normally engage one path at a time,
 then rely on friction to hold the axis while leaving it compliant. The simulator
-also permits combined selections so transmission behavior can be explored.
+also permits combined selections through the low-level ``move_motor()`` method
+so transmission behavior can be explored.
+
+Each follower gear G2-G6 is assumed to have an absolute encoder with a calibrated
+zero. ``reset()`` reads those positions and physically homes one gear at a fixed
+100 motor-degrees/s in the order X tilt, Y tilt, Arm 2, Arm 1, and turntable.
+Motor/G1 angle and simulation time advance normally during that sequence.
 
 This module implements the current kinematic simulation, not the complete
 product control loop. Camera pointer recognition, manual-displacement sensing,
 the planned Hijacked mode, and its blinking status LED are not implemented yet.
 
-G1 always follows a requested motor move. Only selected follower paths are
-coupled to G1; unselected mechanisms hold their current simulated positions.
-Calls are deterministic and headless by default, making the class useful for
-control development and automated tests.
+The mechanism-level ``move()`` API accepts the selected output's displacement
+and speed, then translates them into motor/G1 motion using gear, spool, and
+cable-lever ratios. The UI uses the same output-angle translation by default;
+its optional direct-G1 mode and ``move_motor()`` retain raw motor-angle units.
+High-level moves return a :class:`MoveError`: ``OK`` means the move completed,
+while every other result means the whole command was rejected before motion.
+Arm 1 has a configurable symmetric travel limit that defaults to +/-80 degrees,
+and arm moves are checked against the upper constraint plate using the current
+Arm 2 pose and configured link lengths.
+Only selected follower paths are coupled to G1; unselected mechanisms hold
+their current simulated positions. Calls are deterministic and headless by
+default, making the class useful for control development and automated tests.
 
 Typical use::
 
-    from scripts import HWDesc, RoboLight, Selector
+    from scripts import HWDesc, MoveError, RoboLight, Selector
 
     light = RoboLight(HWDesc(spool_diameter_mm=10), realtime=True)
     light.open_viewer()
     light.open_pip()
-    light.move(Selector.ARM1, velocity=100, degrees=90)
-    state = light.move(Selector.Y_TILT, velocity=100, degrees=-30)
+    result = light.move(Selector.ARM1, velocity=30, degrees=20)
+    if result is not MoveError.OK:
+        raise RuntimeError(f"Arm 1 move rejected: {result.value}")
+    result = light.move(Selector.Y_TILT, velocity=30, degrees=-15)
+    state = light.state
     print(state.y_tilt_degrees)
     light.reset()
     light.close_pip()
@@ -50,11 +67,18 @@ from typing import Any
 
 import mujoco
 import mujoco.viewer
+import numpy as np
 from PIL import Image, ImageTk
 
 from sim.launch_simple_motor_gear_controls import (
+    ARM_CONSTRAINT_ARM1_LIMIT,
+    ARM_CONSTRAINT_PLATFORM_COLLISION,
+    ARM1_LIMIT_DEGREES as MODEL_ARM1_LIMIT_DEGREES,
     DEFAULT_G1_DIAMETER_MM,
     DEFAULT_G2_DIAMETER_MM,
+    DEFAULT_ARM1_LENGTH_MM,
+    DEFAULT_ARM2_LENGTH_MM,
+    DEFAULT_SPEED_DEG_S,
     DEFAULT_SPOOL_DIAMETER_MM,
     G1_JOINT,
     G2_JOINT,
@@ -63,11 +87,15 @@ from sim.launch_simple_motor_gear_controls import (
     G5_JOINT,
     G6_JOINT,
     MAX_DIAMETER_MM,
+    MAX_ARM_LENGTH_MM,
+    MAX_ARM1_LIMIT_DEGREES,
     MAX_MOVE_DEGREES,
     MAX_SPEED_DEG_S,
     MAX_SPOOL_DIAMETER_MM,
     MAX_TILT_DEGREES,
     MIN_DIAMETER_MM,
+    MIN_ARM_LENGTH_MM,
+    MIN_ARM1_LIMIT_DEGREES,
     MIN_MOVE_DEGREES,
     MIN_SPOOL_DIAMETER_MM,
     MIN_TILT_DEGREES,
@@ -75,6 +103,7 @@ from sim.launch_simple_motor_gear_controls import (
     PIP_HEIGHT,
     PIP_REFRESH_SECONDS,
     PIP_WIDTH,
+    PLATE_CABLE_LEVER_ARM_M,
     PLATE_X_TILT_JOINT,
     PLATE_Y_TILT_JOINT,
     SPOTLIGHT_CAMERA,
@@ -86,9 +115,12 @@ from sim.launch_simple_motor_gear_controls import (
     TG4_JOINT,
     TG6_JOINT,
     TURNTABLE_JOINT,
+    arm_motion_violation,
     g1_angle_from_motor,
     g2_angle_from_g1,
+    output_degrees_per_motor_degree,
     set_gear_layout,
+    shortest_angular_error_to_zero,
     tilt_delta_from_spool,
 )
 
@@ -100,7 +132,8 @@ class Selector(str, Enum):
     first timing-belt stage. ``ARM2`` couples G3 and the second arm stages.
     ``Y_TILT`` couples the G4 cable spool, ``X_TILT`` couples the G5 cable
     spool, and ``TURNTABLE`` couples G6 to the lazy-Susan base. ``ALL`` is a
-    simulation convenience that engages all five follower paths together.
+    low-level :meth:`RoboLight.move_motor` convenience that engages all five
+    follower paths together.
     """
 
     G1 = "g1"
@@ -110,6 +143,34 @@ class Selector(str, Enum):
     X_TILT = "x_tilt"
     TURNTABLE = "turntable"
     ALL = "all"
+
+
+class MoveError(str, Enum):
+    """Outcome returned by :meth:`RoboLight.move`.
+
+    ``OK`` means the complete command executed. Other values mean the command
+    was rejected before any motion occurred, so callers may inspect
+    :attr:`RoboLight.state` without needing to undo a partial move.
+
+    Invalid selector, degree, and velocity values have separate results.
+    ``MOTOR_SPEED_LIMIT`` means the requested output speed translated above
+    720 motor-deg/s. ``TILT_LIMIT`` protects the +/-45-degree tilt joints.
+    ``ARM1_LIMIT`` protects Arm 1's configured symmetric travel range, and
+    ``PLATFORM_COLLISION`` means the arm's swept geometry would cross the
+    infinite upper-turntable plane. ``LOST_STEPS`` and ``HIJACKED`` are reserved
+    for physical feedback; the current kinematic simulator does not emit them.
+    """
+
+    OK = "ok"
+    INVALID_SELECTOR = "invalid_selector"
+    INVALID_DEGREES = "invalid_degrees"
+    INVALID_VELOCITY = "invalid_velocity"
+    MOTOR_SPEED_LIMIT = "motor_speed_limit"
+    TILT_LIMIT = "tilt_limit"
+    ARM1_LIMIT = "arm1_limit"
+    PLATFORM_COLLISION = "platform_collision"
+    LOST_STEPS = "lost_steps"
+    HIJACKED = "hijacked"
 
 
 FOLLOWER_SELECTORS = frozenset(
@@ -159,11 +220,20 @@ class HWDesc:
         spool_diameter_mm: Shared diameter of the G4 and G5 cable spools. Valid
             range is 5-50 mm. A larger spool produces more plate tilt for the
             same follower rotation.
+        arm1_length_mm: Pivot-to-pivot length of Arm 1. Valid range is 75-300
+            mm.
+        arm2_length_mm: Pivot-to-plate length of Arm 2. Valid range is 75-300
+            mm.
+        arm1_limit_degrees: Symmetric physical travel limit for Arm 1. The
+            default is +/-80 degrees; valid magnitudes are 1-180 degrees.
     """
 
     g1_diameter_mm: float = DEFAULT_G1_DIAMETER_MM
     follower_diameter_mm: float = DEFAULT_G2_DIAMETER_MM
     spool_diameter_mm: float = DEFAULT_SPOOL_DIAMETER_MM
+    arm1_length_mm: float = DEFAULT_ARM1_LENGTH_MM
+    arm2_length_mm: float = DEFAULT_ARM2_LENGTH_MM
+    arm1_limit_degrees: float = MODEL_ARM1_LIMIT_DEGREES
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,10 +241,15 @@ class RoboLightState:
     """Immutable snapshot returned after each API operation.
 
     All angular fields are in degrees. ``motor_degrees`` and ``g1_degrees`` are
-    cumulative relative to the last reset. ``g2_degrees`` through
-    ``g6_degrees`` expose the follower gears. Arm, tilt, and turntable fields
-    expose the useful output positions. ``simulation_time_seconds`` advances
-    from requested move distance and velocity even when real-time pacing is
+    cumulative from construction and include physical reset motion. Reset uses
+    the absolute follower encoders rather than clearing the motor.
+    Cyclic G2/G3/G6 encoder and Arm 1/Arm 2/turntable fields report the physical
+    orientation in the signed -180 through +180 degree range, so a complete
+    revolution reads as zero. G4/G5 remain multi-turn spool positions because
+    their cable length is not cyclic. Tilt fields expose the useful plate
+    position.
+    ``simulation_time_seconds`` advances from requested move distance and
+    velocity even when real-time pacing is
     disabled. ``last_selectors`` records the normalized selector names supplied
     to the most recent move.
     """
@@ -207,15 +282,18 @@ class RoboLightState:
 class RoboLight:
     """Own and control one RoboLight MuJoCo simulation.
 
-    A ``RoboLight`` instance retains its pose between calls. ``move`` always
-    rotates the motor and G1; the selector determines which output path also
-    moves. Once the call ends, that output remains at its new simulated
-    position, representing the friction hold planned for physical hardware.
+    A ``RoboLight`` instance retains its pose between calls. ``move`` commands
+    one selected output in output degrees and translates that request into the
+    necessary motor/G1 motion. Once the call ends, that output remains at its
+    new simulated position, representing the friction hold planned for physical
+    hardware. ``move_motor`` exposes direct G1 units matching the UI's optional
+    direct-G1 mode and supports transmission experiments.
 
     Moves are blocking. They execute as quickly as the host allows by default
     while still advancing MuJoCo time according to ``velocity``. Pass
     ``realtime=True`` when the call should take the corresponding wall-clock
-    duration.
+    duration. ``move`` uses output-side velocity; ``move_motor`` uses motor-side
+    velocity.
 
     Args:
         hwdesc: Optional initial hardware dimensions. May be an :class:`HWDesc`
@@ -223,7 +301,7 @@ class RoboLight:
         model_path: MJCF file to load. Custom models must contain the same named
             joints as the standard RoboLight model.
         realtime: If true, sleep between simulation steps to match requested
-            motor velocity in wall-clock time.
+            motion in wall-clock time.
         step_seconds: Maximum integration interval. The default is 1/120 s.
 
     Raises:
@@ -247,6 +325,16 @@ class RoboLight:
         "x_tilt": PLATE_X_TILT_JOINT,
         "y_tilt": PLATE_Y_TILT_JOINT,
     }
+
+    ARM1_LIMIT_DEGREES = MODEL_ARM1_LIMIT_DEGREES
+    RESET_VELOCITY_DEG_S = DEFAULT_SPEED_DEG_S
+    RESET_SEQUENCE = (
+        (Selector.X_TILT, "g5"),
+        (Selector.Y_TILT, "g4"),
+        (Selector.ARM2, "g3"),
+        (Selector.ARM1, "g2"),
+        (Selector.TURNTABLE, "g6"),
+    )
 
     def __init__(
         self,
@@ -311,9 +399,10 @@ class RoboLight:
         """Open a passive MuJoCo viewer synchronized by API operations.
 
         The viewer uses the same initial camera pose as the Tk control launcher.
-        ``move``, ``set_hw``, ``set_tilt``, and ``reset`` synchronize it after
-        every state update. Set ``realtime=True`` on :class:`RoboLight` if moves
-        should remain visible for their requested physical duration.
+        ``move``, ``move_motor``, ``set_hw``, ``set_tilt``, and ``reset``
+        synchronize it after every state update. Set ``realtime=True`` on
+        :class:`RoboLight` if moves should remain visible for their requested
+        physical duration.
 
         Calling this method while the viewer is already open returns the
         existing handle.
@@ -437,7 +526,7 @@ class RoboLight:
             self._sync_visuals(force_pip=True)
 
     def set_hw(self, hwdesc: HWDesc | Mapping[str, float]) -> HWDesc:
-        """Apply validated gear and spool dimensions, preserving current pose.
+        """Apply validated gear, spool, and arm dimensions, preserving pose.
 
         A mapping may provide any subset of the fields in :class:`HWDesc`.
         ``g2_diameter_mm`` and ``g2_g6_diameter_mm`` are accepted as aliases for
@@ -445,8 +534,9 @@ class RoboLight:
 
         Changing gear diameter changes the ratio used by subsequent moves.
         Changing spool diameter changes the cable travel produced by subsequent
-        G4/G5 rotation. Existing gear, arm, tilt, and turntable positions do not
-        jump when the description is applied.
+        G4/G5 rotation. Changing either arm length resizes its link and moves
+        all child hardware at its endpoint. Existing angular gear, arm, tilt,
+        and turntable positions do not jump when the description is applied.
 
         Args:
             hwdesc: Complete :class:`HWDesc` or a mapping containing one or more
@@ -480,13 +570,207 @@ class RoboLight:
 
         return self.set_hw(hwdesc)
 
+    def get_position(self, selector: Selector | str) -> float:
+        """Return the current selected-output position in degrees.
+
+        ``G1`` returns the cumulative drive-gear angle. Arm 1, Arm 2, and the
+        turntable return their cyclic signed positions from -180 through +180
+        degrees. X/Y tilt return their signed plate angles. Selector aliases
+        accepted by :meth:`move` are accepted here as well.
+
+        Args:
+            selector: Exactly one output selector or supported selector name.
+
+        Returns:
+            Current position of that selected output in degrees.
+
+        Raises:
+            TypeError: If ``selector`` has an unsupported type.
+            ValueError: If the selector is unknown or represents several
+                outputs, such as ``Selector.ALL``.
+        """
+
+        with self._lock:
+            selectors = self._normalize_selectors(selector)
+            if len(selectors) != 1:
+                raise ValueError("get_position() requires exactly one selector")
+            selected = next(iter(selectors))
+            state = self._snapshot()
+            fields = {
+                Selector.G1: "g1_degrees",
+                Selector.ARM1: "arm1_degrees",
+                Selector.ARM2: "arm2_degrees",
+                Selector.Y_TILT: "y_tilt_degrees",
+                Selector.X_TILT: "x_tilt_degrees",
+                Selector.TURNTABLE: "turntable_degrees",
+            }
+            return float(getattr(state, fields[selected]))
+
+    def get_camera(self) -> np.ndarray:
+        """Capture the spotlight-aligned camera as a new RGB image array.
+
+        The result is a 240 x 320 x 3 NumPy array with ``uint8`` RGB pixels.
+        It owns a copy of the rendered pixels, so later simulation updates do
+        not mutate an image already returned to the caller. The array can be
+        passed to Pillow, OpenCV, scikit-image, or another future image package.
+        Opening the viewer or PIP is not required.
+
+        Returns:
+            Fresh ``numpy.ndarray`` containing the current camera image.
+        """
+
+        with self._lock:
+            with self._viewer_data_lock():
+                if self._pip_renderer is not None:
+                    self._pip_renderer.update_scene(
+                        self.data,
+                        camera=SPOTLIGHT_CAMERA,
+                    )
+                    return self._pip_renderer.render().copy()
+
+                renderer = mujoco.Renderer(
+                    self.model,
+                    height=PIP_HEIGHT,
+                    width=PIP_WIDTH,
+                )
+                try:
+                    renderer.update_scene(self.data, camera=SPOTLIGHT_CAMERA)
+                    return renderer.render().copy()
+                finally:
+                    renderer.close()
+
     def move(
+        self,
+        selector: Selector | str,
+        velocity: float,
+        degrees: float,
+    ) -> MoveError:
+        """Move one selected mechanism output by a relative angle.
+
+        This is the mechanism-level API. ``degrees`` is the requested change
+        of the selected output, and ``velocity`` is that output's speed, both
+        expressed in degrees. For example, selecting ``ARM1`` with
+        ``degrees=20`` rotates Arm 1 by positive 20 degrees regardless of the
+        configured gear diameters. Selecting ``X_TILT`` or ``Y_TILT`` applies
+        the spool diameter and cable lever ratio as well.
+
+        The controller translates the output command into the required G1
+        motor rotation and motor speed. External gear meshing reverses the
+        direction automatically. Arm 1 uses the symmetric travel magnitude in
+        :attr:`HWDesc.arm1_limit_degrees`, which defaults to +/-80 degrees. Arm
+        moves are also checked along their complete swept path against the
+        upper turntable, modeled as an infinite horizontal platform. A rejected
+        move performs no motion.
+
+        Because the physical design has one motor, exactly one output may be
+        selected by this method. Use :meth:`move_motor` for direct G1 commands
+        or simulation experiments that deliberately engage several selectors
+        together. That low-level method bypasses the arm safety checks.
+
+        Args:
+            selector: Exactly one output selector or supported selector name.
+            velocity: Positive selected-output speed in degrees per second.
+            degrees: Signed relative selected-output rotation from -360 through
+                +360 degrees. Tilt commands must also keep the resulting plate
+                angle within its -45 through +45 degree joint range.
+
+        Returns:
+            :class:`MoveError.OK` after a completed move, otherwise an enum
+            identifying why the entire command was rejected. Read
+            :attr:`state` or call :meth:`get_position` for the resulting
+            mechanism state. Physical hardware may additionally return
+            :class:`MoveError.LOST_STEPS` or :class:`MoveError.HIJACKED`; those
+            two feedback paths are stubbed and never emitted by this simulator.
+        """
+
+        with self._lock:
+            try:
+                selectors = self._normalize_selectors(selector)
+            except (TypeError, ValueError):
+                return MoveError.INVALID_SELECTOR
+            if len(selectors) != 1:
+                return MoveError.INVALID_SELECTOR
+            selected = next(iter(selectors))
+
+            try:
+                output_degrees = self._finite_number("degrees", degrees)
+            except (TypeError, ValueError):
+                return MoveError.INVALID_DEGREES
+            if not MIN_MOVE_DEGREES <= output_degrees <= MAX_MOVE_DEGREES:
+                return MoveError.INVALID_DEGREES
+            if abs(output_degrees) < 1e-12:
+                self._last_selectors = (selected.value,)
+                return MoveError.OK
+
+            try:
+                output_speed = self._finite_number("velocity", velocity)
+            except (TypeError, ValueError):
+                return MoveError.INVALID_VELOCITY
+            if output_speed <= 0.0:
+                return MoveError.INVALID_VELOCITY
+
+            if selected in (Selector.X_TILT, Selector.Y_TILT):
+                field = "x_tilt" if selected is Selector.X_TILT else "y_tilt"
+                current_degrees = math.degrees(self.data.qpos[self._qpos[field]])
+                target_degrees = current_degrees + output_degrees
+                if not (
+                    MIN_TILT_DEGREES - 1e-9
+                    <= target_degrees
+                    <= MAX_TILT_DEGREES + 1e-9
+                ):
+                    return MoveError.TILT_LIMIT
+
+            if selected in (Selector.ARM1, Selector.ARM2):
+                with self._viewer_data_lock():
+                    arm1_degrees = math.degrees(
+                        self.data.qpos[self._qpos["arm1"]]
+                    )
+                    arm2_degrees = math.degrees(
+                        self.data.qpos[self._qpos["arm2"]]
+                    )
+                arm_violation = arm_motion_violation(
+                    arm1_degrees,
+                    arm2_degrees,
+                    output_degrees if selected is Selector.ARM1 else 0.0,
+                    output_degrees if selected is Selector.ARM2 else 0.0,
+                    self._hwdesc.arm1_length_mm,
+                    self._hwdesc.arm2_length_mm,
+                    self._hwdesc.arm1_limit_degrees,
+                )
+                if arm_violation == ARM_CONSTRAINT_ARM1_LIMIT:
+                    return MoveError.ARM1_LIMIT
+                if arm_violation == ARM_CONSTRAINT_PLATFORM_COLLISION:
+                    return MoveError.PLATFORM_COLLISION
+
+            output_per_motor = self._output_degrees_per_motor_degree(selected)
+            motor_degrees = output_degrees / output_per_motor
+            motor_speed = output_speed / abs(output_per_motor)
+            if motor_speed > MAX_SPEED_DEG_S:
+                return MoveError.MOTOR_SPEED_LIMIT
+
+            # Small output ratios can require more than one legal 360-degree
+            # motor move. Execute adjacent chunks at the translated speed.
+            remaining = motor_degrees
+            while abs(remaining) >= 1e-12:
+                motor_chunk = math.copysign(
+                    min(abs(remaining), MAX_MOVE_DEGREES),
+                    remaining,
+                )
+                self.move_motor(
+                    selected,
+                    velocity=motor_speed,
+                    degrees=motor_chunk,
+                )
+                remaining -= motor_chunk
+            return MoveError.OK
+
+    def move_motor(
         self,
         selector: Selector | str | Iterable[Selector | str],
         velocity: float,
         degrees: float,
     ) -> RoboLightState:
-        """Perform a signed relative motor move and drive selected outputs.
+        """Perform a direct signed G1 motor move and drive selected outputs.
 
         ``velocity`` is a positive motor speed in degrees per second. ``degrees``
         is the signed motor rotation and must be within -360 to +360. Selectors
@@ -503,7 +787,10 @@ class RoboLight:
         cable travel and plate tilt. Selecting ``TURNTABLE`` rotates G6 and the
         entire lazy-Susan assembly. Physical hardware is intended to select one
         output at a time, although an iterable is supported for simulation
-        experiments.
+        experiments. This method uses the same direct motor units as the UI's
+        Motor V input and its optional direct-G1 rotation mode. It intentionally
+        bypasses the Arm 1 and upper-platform safety checks; normal controller
+        code should use :meth:`move`.
 
         Args:
             selector: One selector, a supported selector string, or an iterable
@@ -605,32 +892,109 @@ class RoboLight:
                             f"{axis}_degrees must be between {MIN_TILT_DEGREES:g} "
                             f"and {MAX_TILT_DEGREES:g}"
                         )
-                    self.data.qpos[self._qpos[axis]] = math.radians(angle)
+                    tilt_rad = math.radians(angle)
+                    self.data.qpos[self._qpos[axis]] = tilt_rad
+
+                    # A hand-moved physical tilt plate reels its cable spool and
+                    # changes the absolute encoder reading on G4 or G5. Keep the
+                    # simulated gear encoder consistent with that assumption.
+                    spool_radius_m = self._hwdesc.spool_diameter_mm / 2000.0
+                    spool_angle_rad = (
+                        tilt_rad * PLATE_CABLE_LEVER_ARM_M / spool_radius_m
+                    )
+                    encoder_key = "g5" if axis == "x_tilt" else "g4"
+                    self.data.qpos[self._qpos[encoder_key]] = spool_angle_rad
                 mujoco.mj_forward(self.model, self.data)
             self._sync_visuals()
             return self._snapshot()
 
     def reset(self) -> RoboLightState:
-        """Return all positions and simulation time to the zero reference.
+        """Physically drive each encoded follower to its zero reference.
 
-        Hardware dimensions remain unchanged. This is the API operation future
-        hardware will use to leave Hijacked mode after the user has manually
-        repositioned an arm. The current simulator has no Hijacked state or LED,
-        so reset presently clears only kinematic state.
+        Reset does not teleport the model or clear simulation time. It engages
+        one transmission path at a fixed 100 motor-degrees/s and uses the
+        absolute encoder angle on each follower gear to calculate the reset
+        motion. Arm and turntable angles are interpreted modulo one revolution,
+        so they take the shortest path to an equivalent zero orientation. G4/G5
+        retain multi-turn position because a complete spool turn changes cable
+        length and is not an equivalent tilt reset. The fixed order is G5/X
+        tilt, G4/Y tilt, G3/Arm 2, G2/Arm 1, and finally G6/turntable.
+
+        G1 and the motor rotate as required by those moves and are not themselves
+        the reset authority. Hardware dimensions remain unchanged. This is the
+        operation future hardware will use to leave Hijacked mode after manual
+        repositioning. The current simulator has no Hijacked state or LED.
 
         Returns:
-            Zeroed state snapshot.
+            State snapshot after all encoded follower gears reach zero.
         """
 
         with self._lock:
-            with self._viewer_data_lock():
-                mujoco.mj_resetData(self.model, self.data)
-                self._motor_angle_rad = 0.0
-                self._last_selectors = (Selector.G1.value,)
-                self._apply_layout()
-                mujoco.mj_forward(self.model, self.data)
+            gear_ratio = (
+                self._hwdesc.g1_diameter_mm / self._hwdesc.follower_diameter_mm
+            )
+            for selector, encoder_key in self.RESET_SEQUENCE:
+                # Cyclic outputs wrap to their nearest equivalent zero. Issue
+                # the resulting encoder error in legal motor-sized chunks.
+                for _ in range(1000):
+                    with self._viewer_data_lock():
+                        encoder_rad = float(
+                            self.data.qpos[self._qpos[encoder_key]]
+                        )
+                    if selector in (Selector.X_TILT, Selector.Y_TILT):
+                        # A full spool turn changes cable length, so tilt has a
+                        # unique multi-turn encoder zero rather than equivalent
+                        # reset orientations every revolution.
+                        encoder_error_rad = encoder_rad
+                    else:
+                        encoder_error_rad = shortest_angular_error_to_zero(
+                            encoder_rad
+                        )
+                    if abs(encoder_error_rad) < 1e-10:
+                        break
+                    motor_degrees = math.degrees(encoder_error_rad) / gear_ratio
+                    motor_chunk = max(
+                        MIN_MOVE_DEGREES,
+                        min(MAX_MOVE_DEGREES, motor_degrees),
+                    )
+                    self.move_motor(
+                        selector,
+                        velocity=self.RESET_VELOCITY_DEG_S,
+                        degrees=motor_chunk,
+                    )
+                else:
+                    raise RuntimeError(f"Reset did not converge for {selector.value}")
+
+                self._set_encoder_reset_exact(selector)
+
             self._sync_visuals(force_pip=True)
             return self._snapshot()
+
+    def _set_encoder_reset_exact(self, selector: Selector) -> None:
+        """Remove numerical residue after a physical encoder-driven reset move."""
+
+        with self._viewer_data_lock():
+            if selector is Selector.X_TILT:
+                self.data.qpos[self._qpos["g5"]] = 0.0
+                self.data.qpos[self._qpos["x_tilt"]] = 0.0
+            elif selector is Selector.Y_TILT:
+                self.data.qpos[self._qpos["g4"]] = 0.0
+                self.data.qpos[self._qpos["y_tilt"]] = 0.0
+            elif selector is Selector.ARM2:
+                self.data.qpos[self._qpos["g3"]] = 0.0
+                self.data.qpos[self._qpos["arm2_stage"]] = 0.0
+                self.data.qpos[self._qpos["arm2"]] = 0.0
+            elif selector is Selector.ARM1:
+                self.data.qpos[self._qpos["g2"]] = 0.0
+                self.data.qpos[self._qpos["arm1"]] = 0.0
+            elif selector is Selector.TURNTABLE:
+                self.data.qpos[self._qpos["g6"]] = 0.0
+                self.data.qpos[self._qpos["turntable"]] = 0.0
+            else:
+                raise ValueError(f"Selector has no reset encoder: {selector.value}")
+
+            self._apply_layout()
+            mujoco.mj_forward(self.model, self.data)
 
     def _viewer_data_lock(self) -> Any:
         """Return the viewer's model-data lock or a no-op context manager."""
@@ -723,6 +1087,12 @@ class RoboLight:
             "g2_diameter_mm": "follower_diameter_mm",
             "g2_g6_diameter_mm": "follower_diameter_mm",
             "spool_diameter_mm": "spool_diameter_mm",
+            "arm1_length": "arm1_length_mm",
+            "arm1_length_mm": "arm1_length_mm",
+            "arm2_length": "arm2_length_mm",
+            "arm2_length_mm": "arm2_length_mm",
+            "arm1_limit": "arm1_limit_degrees",
+            "arm1_limit_degrees": "arm1_limit_degrees",
         }
         values: dict[str, float] = {}
         for key, value in hwdesc.items():
@@ -744,6 +1114,22 @@ class RoboLight:
             raise ValueError(
                 f"spool_diameter_mm must be between {MIN_SPOOL_DIAMETER_MM:g} "
                 f"and {MAX_SPOOL_DIAMETER_MM:g}"
+            )
+        for field_name in ("arm1_length_mm", "arm2_length_mm"):
+            value = self._finite_number(field_name, getattr(hwdesc, field_name))
+            if not MIN_ARM_LENGTH_MM <= value <= MAX_ARM_LENGTH_MM:
+                raise ValueError(
+                    f"{field_name} must be between {MIN_ARM_LENGTH_MM:g} "
+                    f"and {MAX_ARM_LENGTH_MM:g}"
+                )
+        arm1_limit = self._finite_number(
+            "arm1_limit_degrees",
+            hwdesc.arm1_limit_degrees,
+        )
+        if not MIN_ARM1_LIMIT_DEGREES <= arm1_limit <= MAX_ARM1_LIMIT_DEGREES:
+            raise ValueError(
+                "arm1_limit_degrees must be between "
+                f"{MIN_ARM1_LIMIT_DEGREES:g} and {MAX_ARM1_LIMIT_DEGREES:g}"
             )
 
     @staticmethod
@@ -796,6 +1182,16 @@ class RoboLight:
             else:
                 normalized.add(selected)
         return frozenset(normalized)
+
+    def _output_degrees_per_motor_degree(self, selector: Selector) -> float:
+        """Return the signed selected-output rotation produced by one G1 degree."""
+
+        return output_degrees_per_motor_degree(
+            selector.value,
+            self._hwdesc.g1_diameter_mm,
+            self._hwdesc.follower_diameter_mm,
+            self._hwdesc.spool_diameter_mm,
+        )
 
     def _capture_drive_references(self, followers: frozenset[Selector]) -> dict[str, float]:
         g1_angle = g1_angle_from_motor(self._motor_angle_rad)
@@ -879,24 +1275,32 @@ class RoboLight:
             self._hwdesc.follower_diameter_mm,
             self.data.qpos[self._qpos["arm1"]],
             spool_diameter_mm=self._hwdesc.spool_diameter_mm,
+            arm1_length_mm=self._hwdesc.arm1_length_mm,
+            arm2_length_mm=self._hwdesc.arm2_length_mm,
         )
 
     def _snapshot(self) -> RoboLightState:
         degrees = math.degrees
         qpos = self.data.qpos
+
+        def cyclic_degrees(joint_key: str) -> float:
+            return degrees(
+                shortest_angular_error_to_zero(qpos[self._qpos[joint_key]])
+            )
+
         return RoboLightState(
             motor_degrees=degrees(self._motor_angle_rad),
             g1_degrees=degrees(qpos[self._qpos["g1"]]),
-            g2_degrees=degrees(qpos[self._qpos["g2"]]),
-            g3_degrees=degrees(qpos[self._qpos["g3"]]),
+            g2_degrees=cyclic_degrees("g2"),
+            g3_degrees=cyclic_degrees("g3"),
             g4_degrees=degrees(qpos[self._qpos["g4"]]),
             g5_degrees=degrees(qpos[self._qpos["g5"]]),
-            g6_degrees=degrees(qpos[self._qpos["g6"]]),
-            arm1_degrees=degrees(qpos[self._qpos["arm1"]]),
-            arm2_degrees=degrees(qpos[self._qpos["arm2"]]),
+            g6_degrees=cyclic_degrees("g6"),
+            arm1_degrees=cyclic_degrees("arm1"),
+            arm2_degrees=cyclic_degrees("arm2"),
             x_tilt_degrees=degrees(qpos[self._qpos["x_tilt"]]),
             y_tilt_degrees=degrees(qpos[self._qpos["y_tilt"]]),
-            turntable_degrees=degrees(qpos[self._qpos["turntable"]]),
+            turntable_degrees=cyclic_degrees("turntable"),
             simulation_time_seconds=float(self.data.time),
             last_selectors=self._last_selectors,
         )

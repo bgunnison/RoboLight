@@ -102,6 +102,8 @@ G5_BODY = "G5"
 G6_BODY = "G6"
 TG2_BODY = "TG2"
 TG4_BODY = "TG4"
+TG6_BODY = "TG6"
+TILT_PLATE_BODY = "tilt_plate_body"
 G2_SITE = "G2"
 G3_SITE = "G3"
 G4_SITE = "G4"
@@ -125,6 +127,8 @@ G6_SUPPORT_GEOM = "g6_support"
 G6_AXLE_GEOM = "g6_axle"
 TURNTABLE_DISK_GEOM = "turntable_disk"
 TURNTABLE_MARK_GEOM = "turntable_mark"
+UPPER_TURNTABLE_DISK_GEOM = "upper_turntable_disk"
+UPPER_TURNTABLE_MARK_GEOM = "upper_turntable_mark"
 TG2_SUPPORT_GEOM = "tg2_support"
 TG2_AXLE_GEOM = "tg2_axle"
 TG4_SUPPORT_GEOM = "tg4_support"
@@ -133,6 +137,11 @@ BELT_LEFT_GEOM = "belt_left"
 BELT_RIGHT_GEOM = "belt_right"
 BELT2_LEFT_GEOM = "belt2_left"
 BELT2_RIGHT_GEOM = "belt2_right"
+ARM1_GEOM = "arm1"
+ARM2_GEOM = "arm2"
+BELT3_LEFT_GEOM = "belt3_left"
+BELT3_RIGHT_GEOM = "belt3_right"
+ARM1_END_AXLE_GEOM = "arm1_end_axle"
 G2_CENTER_Y = -0.090
 G3_CENTER_Y = -0.130
 G4_CENTER_Y = -0.170
@@ -155,14 +164,13 @@ TIMING_GEAR_Y = -0.106
 TIMING_GEAR2_Y = -0.146
 TG5_LOCAL_Y = -0.012
 TG6_LOCAL_Y = (TIMING_GEAR2_Y + TG5_LOCAL_Y) - TIMING_GEAR_Y
-ARM1_LENGTH_M = 0.150
 BELT_CENTER_DISTANCE_M = 0.100
 TG2_SUPPORT_CENTER_Z = G2_CENTER_Z + (BELT_CENTER_DISTANCE_M / 2.0)
 TG2_AXLE_Y = (G2_SUPPORT_Y + TIMING_GEAR_Y) / 2.0
 TG4_AXLE_Y = (G3_SUPPORT_Y + TIMING_GEAR2_Y) / 2.0
 START_CAMERA_LOOKAT = (0.080, -0.010, 0.450)
 START_CAMERA_DISTANCE = 1.20
-START_CAMERA_AZIMUTH = 180.0
+START_CAMERA_AZIMUTH = 90.0
 START_CAMERA_ELEVATION = 0.0
 
 DEFAULT_G1_DIAMETER_MM = 64.0
@@ -171,6 +179,7 @@ MIN_DIAMETER_MM = 35.0
 MAX_DIAMETER_MM = 140.0
 TIMING_GEAR_DIAMETER_MM = MIN_DIAMETER_MM
 DEFAULT_SPEED_DEG_S = 100.0
+RESET_VELOCITY_DEG_S = 100.0
 MIN_SPEED_DEG_S = 0.0
 MAX_SPEED_DEG_S = 720.0
 DEFAULT_MOVE_DEGREES = 0.0
@@ -182,11 +191,26 @@ MAX_TILT_DEGREES = 45.0
 DEFAULT_SPOOL_DIAMETER_MM = 10.0
 MIN_SPOOL_DIAMETER_MM = 5.0
 MAX_SPOOL_DIAMETER_MM = 50.0
+DEFAULT_ARM1_LENGTH_MM = 150.0
+DEFAULT_ARM2_LENGTH_MM = 150.0
+MIN_ARM_LENGTH_MM = 75.0
+MAX_ARM_LENGTH_MM = 300.0
 PLATE_CABLE_LEVER_ARM_M = 0.025
+ARM1_LIMIT_DEGREES = 80.0
+MIN_ARM1_LIMIT_DEGREES = 1.0
+MAX_ARM1_LIMIT_DEGREES = 180.0
+UPPER_TURNTABLE_TOP_Z_M = 0.170
+ARM_LINK_HALF_WIDTH_M = 0.006
+TILT_PLATE_HALF_LENGTH_M = 0.025
+TILT_PLATE_HALF_THICKNESS_M = 0.003
+ARM_CONSTRAINT_ARM1_LIMIT = "arm1_limit"
+ARM_CONSTRAINT_PLATFORM_COLLISION = "platform_collision"
 TURNTABLE_CENTER_Y = -0.118
 TURNTABLE_REAR_Y = 0.025
 TURNTABLE_FRONT_Y = -0.260
 TURNTABLE_RADIAL_MARGIN_M = 0.015
+MOTOR_BODY_Y = -0.035
+UPPER_TURNTABLE_CENTER_Y_IN_MOTOR = TURNTABLE_CENTER_Y - MOTOR_BODY_Y
 PIP_WIDTH = 320
 PIP_HEIGHT = 240
 PIP_REFRESH_SECONDS = 0.10
@@ -230,17 +254,121 @@ def tilt_delta_from_spool(spool_angle_delta_rad, spool_diameter_mm):
     return cable_travel_m / PLATE_CABLE_LEVER_ARM_M
 
 
+def arm_configuration_violation(
+    arm1_degrees,
+    arm2_degrees,
+    arm1_length_mm,
+    arm2_length_mm,
+    arm1_limit_degrees=ARM1_LIMIT_DEGREES,
+):
+    """Return the arm constraint violated by one two-link configuration."""
+
+    if abs(arm1_degrees) > arm1_limit_degrees + 1e-9:
+        return ARM_CONSTRAINT_ARM1_LIMIT
+
+    arm1_angle = math.radians(arm1_degrees)
+    arm2_world_angle = math.radians(arm1_degrees + arm2_degrees)
+    arm1_length_m = arm1_length_mm / 1000.0
+    arm2_length_m = arm2_length_mm / 1000.0
+    pivot_z = G2_CENTER_Z + BELT_CENTER_DISTANCE_M
+    elbow_z = pivot_z + (arm1_length_m * math.cos(arm1_angle))
+    endpoint_z = elbow_z + (arm2_length_m * math.cos(arm2_world_angle))
+
+    arm1_low_z = min(pivot_z, elbow_z) - (
+        ARM_LINK_HALF_WIDTH_M * abs(math.sin(arm1_angle))
+    )
+    arm2_low_z = min(elbow_z, endpoint_z) - (
+        ARM_LINK_HALF_WIDTH_M * abs(math.sin(arm2_world_angle))
+    )
+    plate_center_z = endpoint_z + (
+        TILT_PLATE_HALF_THICKNESS_M * math.cos(arm2_world_angle)
+    )
+    plate_low_z = (
+        plate_center_z
+        - (TILT_PLATE_HALF_LENGTH_M * abs(math.sin(arm2_world_angle)))
+        - (TILT_PLATE_HALF_THICKNESS_M * abs(math.cos(arm2_world_angle)))
+    )
+    if min(arm1_low_z, arm2_low_z, plate_low_z) < UPPER_TURNTABLE_TOP_Z_M - 1e-9:
+        return ARM_CONSTRAINT_PLATFORM_COLLISION
+    return None
+
+
+def arm_motion_violation(
+    arm1_start_degrees,
+    arm2_start_degrees,
+    arm1_delta_degrees,
+    arm2_delta_degrees,
+    arm1_length_mm,
+    arm2_length_mm,
+    arm1_limit_degrees=ARM1_LIMIT_DEGREES,
+):
+    """Check a linear joint-space move against the infinite upper platform."""
+
+    largest_delta = max(abs(arm1_delta_degrees), abs(arm2_delta_degrees))
+    sample_count = max(1, math.ceil(largest_delta / 0.25))
+    for sample in range(sample_count + 1):
+        fraction = sample / sample_count
+        violation = arm_configuration_violation(
+            arm1_start_degrees + (arm1_delta_degrees * fraction),
+            arm2_start_degrees + (arm2_delta_degrees * fraction),
+            arm1_length_mm,
+            arm2_length_mm,
+            arm1_limit_degrees,
+        )
+        if violation is not None:
+            return violation
+    return None
+
+
 def rotate_y(v, angle_rad):
     c = math.cos(angle_rad)
     s = math.sin(angle_rad)
     return ((c * v[0]) + (s * v[2]), v[1], (-s * v[0]) + (c * v[2]))
 
 
-def set_arm1_belt_layout(model, g2_center_x, arm_angle_rad):
+def set_arm_lengths(model, arm1_length_mm, arm2_length_mm):
+    """Resize both links and reposition every child attached to their ends."""
+
+    arm1_length_m = arm1_length_mm / 1000.0
+    arm2_length_m = arm2_length_mm / 1000.0
+
+    arm1_geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, ARM1_GEOM)
+    model.geom_pos[arm1_geom_id, 2] = arm1_length_m / 2.0
+    model.geom_size[arm1_geom_id, 2] = arm1_length_m / 2.0
+
+    for belt_name in (BELT3_LEFT_GEOM, BELT3_RIGHT_GEOM):
+        belt_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, belt_name)
+        model.geom_pos[belt_id, 2] = arm1_length_m / 2.0
+        model.geom_size[belt_id, 2] = arm1_length_m / 2.0
+
+    arm1_end_axle_id = mujoco.mj_name2id(
+        model,
+        mujoco.mjtObj.mjOBJ_GEOM,
+        ARM1_END_AXLE_GEOM,
+    )
+    model.geom_pos[arm1_end_axle_id, 2] = arm1_length_m
+
+    tg6_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, TG6_BODY)
+    model.body_pos[tg6_body_id, 2] = arm1_length_m
+
+    arm2_geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, ARM2_GEOM)
+    model.geom_pos[arm2_geom_id, 2] = arm2_length_m / 2.0
+    model.geom_size[arm2_geom_id, 2] = arm2_length_m / 2.0
+
+    tilt_plate_body_id = mujoco.mj_name2id(
+        model,
+        mujoco.mjtObj.mjOBJ_BODY,
+        TILT_PLATE_BODY,
+    )
+    model.body_pos[tilt_plate_body_id, 2] = arm2_length_m
+
+
+def set_arm1_belt_layout(model, g2_center_x, arm_angle_rad, arm1_length_mm):
     timing_radius = radius_m(TIMING_GEAR_DIAMETER_MM)
     tg2_center_z = G2_CENTER_Z + BELT_CENTER_DISTANCE_M
     tg5_center = (g2_center_x, TIMING_GEAR2_Y + TG5_LOCAL_Y, tg2_center_z)
-    tg6_offset = rotate_y((0.0, TG6_LOCAL_Y, ARM1_LENGTH_M), arm_angle_rad)
+    arm1_length_m = arm1_length_mm / 1000.0
+    tg6_offset = rotate_y((0.0, TG6_LOCAL_Y, arm1_length_m), arm_angle_rad)
     tg6_center = (
         g2_center_x + tg6_offset[0],
         TIMING_GEAR_Y + tg6_offset[1],
@@ -279,6 +407,8 @@ def set_gear_layout(
     g2_diameter_mm,
     arm_angle_rad=0.0,
     spool_diameter_mm=DEFAULT_SPOOL_DIAMETER_MM,
+    arm1_length_mm=DEFAULT_ARM1_LENGTH_MM,
+    arm2_length_mm=DEFAULT_ARM2_LENGTH_MM,
 ):
     g1_radius = radius_m(g1_diameter_mm)
     g2_radius = radius_m(g2_diameter_mm)
@@ -299,6 +429,7 @@ def set_gear_layout(
     set_gear_diameter(model, TG4_GEOMS, TIMING_GEAR_DIAMETER_MM)
     set_gear_diameter(model, TG5_GEOMS, TIMING_GEAR_DIAMETER_MM)
     set_gear_diameter(model, TG6_GEOMS, TIMING_GEAR_DIAMETER_MM)
+    set_arm_lengths(model, arm1_length_mm, arm2_length_mm)
 
     turntable_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, TURNTABLE_JOINT)
     model.jnt_pos[turntable_joint_id, 0] = g2_center_x
@@ -321,6 +452,29 @@ def set_gear_layout(
     model.geom_pos[turntable_mark_id, 0] = g2_center_x + (turntable_radius * 0.55)
     model.geom_pos[turntable_mark_id, 1] = TURNTABLE_CENTER_Y
     model.geom_size[turntable_mark_id, 0] = turntable_radius * 0.32
+
+    # The upper plate is parented to the motor body. Express the shared
+    # turntable center in that body's local frame while matching the lower
+    # disk's dynamically calculated radius and radial mark.
+    upper_turntable_disk_id = mujoco.mj_name2id(
+        model,
+        mujoco.mjtObj.mjOBJ_GEOM,
+        UPPER_TURNTABLE_DISK_GEOM,
+    )
+    model.geom_pos[upper_turntable_disk_id, 0] = g2_center_x
+    model.geom_pos[upper_turntable_disk_id, 1] = UPPER_TURNTABLE_CENTER_Y_IN_MOTOR
+    model.geom_size[upper_turntable_disk_id, 0] = turntable_radius
+
+    upper_turntable_mark_id = mujoco.mj_name2id(
+        model,
+        mujoco.mjtObj.mjOBJ_GEOM,
+        UPPER_TURNTABLE_MARK_GEOM,
+    )
+    model.geom_pos[upper_turntable_mark_id, 0] = (
+        g2_center_x + (turntable_radius * 0.55)
+    )
+    model.geom_pos[upper_turntable_mark_id, 1] = UPPER_TURNTABLE_CENTER_Y_IN_MOTOR
+    model.geom_size[upper_turntable_mark_id, 0] = turntable_radius * 0.32
 
     follower_layouts = (
         (G2_BODY, G2_CENTER_Y, G2_SUPPORT_GEOM, G2_SUPPORT_Y, G2_AXLE_GEOM, G2_AXLE_Y),
@@ -445,7 +599,7 @@ def set_gear_layout(
         model.site_pos[tg4_site_id, 1] = TIMING_GEAR2_Y
         model.site_pos[tg4_site_id, 2] = tg2_center_z + timing_radius + 0.012
 
-    set_arm1_belt_layout(model, g2_center_x, arm_angle_rad)
+    set_arm1_belt_layout(model, g2_center_x, arm_angle_rad, arm1_length_mm)
 
 
 def g1_angle_from_motor(motor_angle_rad):
@@ -454,6 +608,38 @@ def g1_angle_from_motor(motor_angle_rad):
 
 def g2_angle_from_g1(g1_angle_rad, g1_diameter_mm, g2_diameter_mm):
     return -g1_angle_rad * (g1_diameter_mm / g2_diameter_mm)
+
+
+def output_degrees_per_motor_degree(
+    axis_key,
+    g1_diameter_mm,
+    follower_diameter_mm,
+    spool_diameter_mm,
+):
+    """Return signed selected-output degrees produced by one G1 degree."""
+
+    if axis_key == "g1":
+        return 1.0
+    follower_per_motor = -(g1_diameter_mm / follower_diameter_mm)
+    if axis_key in ("x_tilt", "y_tilt"):
+        spool_radius_m = spool_diameter_mm / 2000.0
+        return follower_per_motor * (
+            spool_radius_m / PLATE_CABLE_LEVER_ARM_M
+        )
+    if axis_key in ("arm1", "arm2", "turntable"):
+        return follower_per_motor
+    raise ValueError(f"Unknown output axis: {axis_key}")
+
+
+def shortest_angular_error_to_zero(angle_rad):
+    """Return the signed encoder error to zero within one revolution.
+
+    Absolute rotary encoders repeat at 360 degrees. Wrapping the current angle
+    to [-pi, pi] makes a physical reset choose the shorter direction instead of
+    unwinding every accumulated revolution.
+    """
+
+    return math.atan2(math.sin(angle_rad), math.cos(angle_rad))
 
 
 def main():
@@ -495,9 +681,14 @@ def main():
     g2_diameter_entry_var = tk.StringVar(value=format_number(DEFAULT_G2_DIAMETER_MM))
     spool_diameter_slider_var = tk.DoubleVar(value=DEFAULT_SPOOL_DIAMETER_MM)
     spool_diameter_entry_var = tk.StringVar(value=format_number(DEFAULT_SPOOL_DIAMETER_MM))
+    arm1_length_slider_var = tk.DoubleVar(value=DEFAULT_ARM1_LENGTH_MM)
+    arm1_length_entry_var = tk.StringVar(value=format_number(DEFAULT_ARM1_LENGTH_MM))
+    arm2_length_slider_var = tk.DoubleVar(value=DEFAULT_ARM2_LENGTH_MM)
+    arm2_length_entry_var = tk.StringVar(value=format_number(DEFAULT_ARM2_LENGTH_MM))
     speed_var = tk.DoubleVar(value=DEFAULT_SPEED_DEG_S)
     rotation_slider_var = tk.DoubleVar(value=DEFAULT_MOVE_DEGREES)
     rotation_entry_var = tk.StringVar(value=format_degrees(DEFAULT_MOVE_DEGREES))
+    output_rotation_var = tk.BooleanVar(value=True)
     tilt_x_var = tk.DoubleVar(value=DEFAULT_TILT_DEGREES)
     tilt_y_var = tk.DoubleVar(value=DEFAULT_TILT_DEGREES)
     arm1_engaged_var = tk.BooleanVar(value=True)
@@ -524,12 +715,15 @@ def main():
     g4_was_engaged = [g4_engaged_var.get()]
     g5_was_engaged = [g5_engaged_var.get()]
     g6_was_engaged = [g6_engaged_var.get()]
+    reset_active = [False]
+    reset_queue = []
+    reset_current_axis = [None]
 
     frame = ttk.Frame(root, padding=12)
     frame.grid(row=0, column=0, sticky="nsew")
 
     pip_frame = ttk.LabelFrame(frame, text="Spotlight camera PIP", padding=6)
-    pip_frame.grid(row=0, column=2, rowspan=18, sticky="n", padx=(16, 0))
+    pip_frame.grid(row=0, column=2, rowspan=23, sticky="n", padx=(16, 0))
     pip_canvas = tk.Canvas(
         pip_frame,
         width=PIP_WIDTH,
@@ -557,7 +751,7 @@ def main():
     )
     speed_slider.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(2, 12))
 
-    rotation_label = ttk.Label(frame, text="Rotation (deg)")
+    rotation_label = ttk.Label(frame, text="Selected output rotation (deg)")
     rotation_label.grid(row=2, column=0, sticky="w")
     rotation_entry = ttk.Entry(frame, textvariable=rotation_entry_var, width=12)
     rotation_entry.grid(row=2, column=1, sticky="e")
@@ -571,35 +765,81 @@ def main():
     )
     rotation_slider.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(2, 12))
 
-    status_label = ttk.Label(frame, width=34)
-    status_label.grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 8))
+    output_rotation_check = ttk.Checkbutton(
+        frame,
+        text="Rotation targets selected output",
+        variable=output_rotation_var,
+    )
+    output_rotation_check.grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 6))
 
-    ttk.Checkbutton(frame, text="Arm 1", variable=arm1_engaged_var).grid(
-        row=7,
+    status_label = ttk.Label(frame, width=44)
+    status_label.grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+    selector_vars = (
+        arm1_engaged_var,
+        arm2_engaged_var,
+        g4_engaged_var,
+        g5_engaged_var,
+        g6_engaged_var,
+    )
+
+    def select_exclusively_for_output(active_var):
+        if output_rotation_var.get() and active_var.get():
+            for selector_var in selector_vars:
+                if selector_var is not active_var:
+                    selector_var.set(False)
+
+    ttk.Checkbutton(
+        frame,
+        text="Arm 1",
+        variable=arm1_engaged_var,
+        command=lambda: select_exclusively_for_output(arm1_engaged_var),
+    ).grid(
+        row=8,
         column=0,
         sticky="w",
         pady=(10, 0),
     )
-    ttk.Checkbutton(frame, text="Arm 2", variable=arm2_engaged_var).grid(
-        row=7,
+    ttk.Checkbutton(
+        frame,
+        text="Arm 2",
+        variable=arm2_engaged_var,
+        command=lambda: select_exclusively_for_output(arm2_engaged_var),
+    ).grid(
+        row=8,
         column=1,
         sticky="w",
         pady=(10, 0),
     )
-    ttk.Checkbutton(frame, text="G4 -> Y tilt", variable=g4_engaged_var).grid(
-        row=8,
-        column=0,
-        sticky="w",
-        pady=(4, 0),
-    )
-    ttk.Checkbutton(frame, text="G5 -> X tilt", variable=g5_engaged_var).grid(
-        row=8,
-        column=1,
-        sticky="w",
-        pady=(4, 0),
-    )
-    ttk.Checkbutton(frame, text="G6 -> turntable", variable=g6_engaged_var).grid(
+    ttk.Checkbutton(
+        frame,
+        text="G4 -> Y tilt",
+        variable=g4_engaged_var,
+        command=lambda: select_exclusively_for_output(g4_engaged_var),
+    ).grid(
         row=9,
+        column=0,
+        sticky="w",
+        pady=(4, 0),
+    )
+    ttk.Checkbutton(
+        frame,
+        text="G5 -> X tilt",
+        variable=g5_engaged_var,
+        command=lambda: select_exclusively_for_output(g5_engaged_var),
+    ).grid(
+        row=9,
+        column=1,
+        sticky="w",
+        pady=(4, 0),
+    )
+    ttk.Checkbutton(
+        frame,
+        text="G6 -> turntable",
+        variable=g6_engaged_var,
+        command=lambda: select_exclusively_for_output(g6_engaged_var),
+    ).grid(
+        row=10,
         column=0,
         columnspan=2,
         sticky="w",
@@ -611,18 +851,18 @@ def main():
         width=24,
         text=f"X tilt: {format_degrees(DEFAULT_TILT_DEGREES)} deg",
     )
-    tilt_x_label.grid(row=10, column=0, columnspan=2, sticky="w", pady=(10, 0))
+    tilt_x_label.grid(row=11, column=0, columnspan=2, sticky="w", pady=(10, 0))
     tilt_y_label = ttk.Label(
         frame,
         width=24,
         text=f"Y tilt: {format_degrees(DEFAULT_TILT_DEGREES)} deg",
     )
-    tilt_y_label.grid(row=11, column=0, columnspan=2, sticky="w", pady=(2, 8))
+    tilt_y_label.grid(row=12, column=0, columnspan=2, sticky="w", pady=(2, 8))
 
     g1_diameter_label = ttk.Label(frame, text="G1 diameter (mm)")
-    g1_diameter_label.grid(row=12, column=0, sticky="w", pady=(10, 0))
+    g1_diameter_label.grid(row=13, column=0, sticky="w", pady=(10, 0))
     g1_diameter_entry = ttk.Entry(frame, textvariable=g1_diameter_entry_var, width=12)
-    g1_diameter_entry.grid(row=12, column=1, sticky="e", pady=(10, 0))
+    g1_diameter_entry.grid(row=13, column=1, sticky="e", pady=(10, 0))
     g1_diameter_slider = ttk.Scale(
         frame,
         from_=MIN_DIAMETER_MM,
@@ -631,12 +871,12 @@ def main():
         orient="horizontal",
         length=260,
     )
-    g1_diameter_slider.grid(row=13, column=0, columnspan=2, sticky="ew", pady=(2, 8))
+    g1_diameter_slider.grid(row=14, column=0, columnspan=2, sticky="ew", pady=(2, 8))
 
     g2_diameter_label = ttk.Label(frame, text="G2-G6 diameter (mm)")
-    g2_diameter_label.grid(row=14, column=0, sticky="w")
+    g2_diameter_label.grid(row=15, column=0, sticky="w")
     g2_diameter_entry = ttk.Entry(frame, textvariable=g2_diameter_entry_var, width=12)
-    g2_diameter_entry.grid(row=14, column=1, sticky="e")
+    g2_diameter_entry.grid(row=15, column=1, sticky="e")
     g2_diameter_slider = ttk.Scale(
         frame,
         from_=MIN_DIAMETER_MM,
@@ -645,12 +885,12 @@ def main():
         orient="horizontal",
         length=260,
     )
-    g2_diameter_slider.grid(row=15, column=0, columnspan=2, sticky="ew", pady=(2, 8))
+    g2_diameter_slider.grid(row=16, column=0, columnspan=2, sticky="ew", pady=(2, 8))
 
     spool_diameter_label = ttk.Label(frame, text="Spool diameter (mm)")
-    spool_diameter_label.grid(row=16, column=0, sticky="w")
+    spool_diameter_label.grid(row=17, column=0, sticky="w")
     spool_diameter_entry = ttk.Entry(frame, textvariable=spool_diameter_entry_var, width=12)
-    spool_diameter_entry.grid(row=16, column=1, sticky="e")
+    spool_diameter_entry.grid(row=17, column=1, sticky="e")
     spool_diameter_slider = ttk.Scale(
         frame,
         from_=MIN_SPOOL_DIAMETER_MM,
@@ -659,7 +899,35 @@ def main():
         orient="horizontal",
         length=260,
     )
-    spool_diameter_slider.grid(row=17, column=0, columnspan=2, sticky="ew", pady=(2, 0))
+    spool_diameter_slider.grid(row=18, column=0, columnspan=2, sticky="ew", pady=(2, 0))
+
+    arm1_length_label = ttk.Label(frame, text="Arm 1 length (mm)")
+    arm1_length_label.grid(row=19, column=0, sticky="w", pady=(8, 0))
+    arm1_length_entry = ttk.Entry(frame, textvariable=arm1_length_entry_var, width=12)
+    arm1_length_entry.grid(row=19, column=1, sticky="e", pady=(8, 0))
+    arm1_length_slider = ttk.Scale(
+        frame,
+        from_=MIN_ARM_LENGTH_MM,
+        to=MAX_ARM_LENGTH_MM,
+        variable=arm1_length_slider_var,
+        orient="horizontal",
+        length=260,
+    )
+    arm1_length_slider.grid(row=20, column=0, columnspan=2, sticky="ew", pady=(2, 0))
+
+    arm2_length_label = ttk.Label(frame, text="Arm 2 length (mm)")
+    arm2_length_label.grid(row=21, column=0, sticky="w", pady=(8, 0))
+    arm2_length_entry = ttk.Entry(frame, textvariable=arm2_length_entry_var, width=12)
+    arm2_length_entry.grid(row=21, column=1, sticky="e", pady=(8, 0))
+    arm2_length_slider = ttk.Scale(
+        frame,
+        from_=MIN_ARM_LENGTH_MM,
+        to=MAX_ARM_LENGTH_MM,
+        variable=arm2_length_slider_var,
+        orient="horizontal",
+        length=260,
+    )
+    arm2_length_slider.grid(row=22, column=0, columnspan=2, sticky="ew", pady=(2, 0))
 
     def clamp_rotation(value):
         return max(MIN_MOVE_DEGREES, min(MAX_MOVE_DEGREES, value))
@@ -706,6 +974,16 @@ def main():
         spool_diameter_entry_var.set(format_number(diameter))
         return True
 
+    def commit_arm_length_entry(entry_var, slider_var, _event=None):
+        try:
+            length = float(entry_var.get())
+        except ValueError:
+            length = slider_var.get()
+        length = max(MIN_ARM_LENGTH_MM, min(MAX_ARM_LENGTH_MM, length))
+        slider_var.set(length)
+        entry_var.set(format_number(length))
+        return True
+
     rotation_slider.configure(command=update_rotation_entry)
     rotation_entry.bind("<Return>", commit_rotation_entry)
     rotation_entry.bind("<FocusOut>", commit_rotation_entry)
@@ -732,13 +1010,139 @@ def main():
     )
     spool_diameter_entry.bind("<Return>", commit_spool_diameter_entry)
     spool_diameter_entry.bind("<FocusOut>", commit_spool_diameter_entry)
+    arm1_length_slider.configure(
+        command=lambda value: update_diameter_entry(arm1_length_entry_var, value)
+    )
+    arm1_length_entry.bind(
+        "<Return>",
+        lambda event: commit_arm_length_entry(
+            arm1_length_entry_var,
+            arm1_length_slider_var,
+            event,
+        ),
+    )
+    arm1_length_entry.bind(
+        "<FocusOut>",
+        lambda event: commit_arm_length_entry(
+            arm1_length_entry_var,
+            arm1_length_slider_var,
+            event,
+        ),
+    )
+    arm2_length_slider.configure(
+        command=lambda value: update_diameter_entry(arm2_length_entry_var, value)
+    )
+    arm2_length_entry.bind(
+        "<Return>",
+        lambda event: commit_arm_length_entry(
+            arm2_length_entry_var,
+            arm2_length_slider_var,
+            event,
+        ),
+    )
+    arm2_length_entry.bind(
+        "<FocusOut>",
+        lambda event: commit_arm_length_entry(
+            arm2_length_entry_var,
+            arm2_length_slider_var,
+            event,
+        ),
+    )
+
+    def set_all_selectors(engaged=False):
+        arm1_engaged_var.set(engaged)
+        arm2_engaged_var.set(engaged)
+        g4_engaged_var.set(engaged)
+        g5_engaged_var.set(engaged)
+        g6_engaged_var.set(engaged)
+
+    def update_rotation_mode():
+        if output_rotation_var.get():
+            rotation_label.configure(text="Selected output rotation (deg)")
+            engaged_vars = [var for var in selector_vars if var.get()]
+            if len(engaged_vars) > 1:
+                selected_var = engaged_vars[0]
+                for selector_var in selector_vars:
+                    selector_var.set(selector_var is selected_var)
+        else:
+            rotation_label.configure(text="G1 motor rotation (deg)")
+
+    output_rotation_check.configure(command=update_rotation_mode)
+
+    def engage_only_reset_axis(axis_key):
+        set_all_selectors(False)
+        if axis_key == "x_tilt":
+            g5_engaged_var.set(True)
+        elif axis_key == "y_tilt":
+            g4_engaged_var.set(True)
+        elif axis_key == "arm2":
+            arm2_engaged_var.set(True)
+        elif axis_key == "arm1":
+            arm1_engaged_var.set(True)
+        elif axis_key == "turntable":
+            g6_engaged_var.set(True)
+
+    def cancel_physical_reset():
+        reset_active[0] = False
+        reset_queue.clear()
+        reset_current_axis[0] = None
 
     def start_move():
+        cancel_physical_reset()
         commit_rotation_entry()
         commit_diameter_entry(g1_diameter_entry_var, g1_diameter_slider_var)
         commit_diameter_entry(g2_diameter_entry_var, g2_diameter_slider_var)
         commit_spool_diameter_entry()
-        motor_move_degrees = rotation_slider_var.get()
+        commit_arm_length_entry(arm1_length_entry_var, arm1_length_slider_var)
+        commit_arm_length_entry(arm2_length_entry_var, arm2_length_slider_var)
+        requested_degrees = rotation_slider_var.get()
+        motor_move_degrees = requested_degrees
+        move_description = f"G1 {format_degrees(motor_move_degrees)} deg"
+
+        if output_rotation_var.get():
+            selected_axes = [
+                ("Arm 1", "arm1", arm1_engaged_var.get()),
+                ("Arm 2", "arm2", arm2_engaged_var.get()),
+                ("Y tilt", "y_tilt", g4_engaged_var.get()),
+                ("X tilt", "x_tilt", g5_engaged_var.get()),
+                ("Turntable", "turntable", g6_engaged_var.get()),
+            ]
+            selected_axes = [axis for axis in selected_axes if axis[2]]
+            if len(selected_axes) != 1:
+                remaining_motor_move_rad[0] = 0.0
+                status_label.configure(
+                    text="Select exactly one output, or use direct G1 mode"
+                )
+                return
+
+            output_label, axis_key, _ = selected_axes[0]
+            if axis_key in ("x_tilt", "y_tilt"):
+                current_tilt = (
+                    tilt_x_var.get() if axis_key == "x_tilt" else tilt_y_var.get()
+                )
+                target_tilt = current_tilt + requested_degrees
+                if not MIN_TILT_DEGREES <= target_tilt <= MAX_TILT_DEGREES:
+                    remaining_motor_move_rad[0] = 0.0
+                    status_label.configure(
+                        text=(
+                            f"{output_label} target {format_degrees(target_tilt)} "
+                            f"outside {MIN_TILT_DEGREES:g}..{MAX_TILT_DEGREES:g} deg"
+                        )
+                    )
+                    return
+
+            output_per_motor = output_degrees_per_motor_degree(
+                axis_key,
+                g1_diameter_slider_var.get(),
+                g2_diameter_slider_var.get(),
+                spool_diameter_slider_var.get(),
+            )
+            motor_move_degrees = requested_degrees / output_per_motor
+            move_description = (
+                f"{output_label} {format_degrees(requested_degrees)} deg "
+                f"(G1 {format_degrees(motor_move_degrees)} deg)"
+            )
+
         speed = speed_var.get()
         if abs(motor_move_degrees) < 0.001:
             remaining_motor_move_rad[0] = 0.0
@@ -747,68 +1151,198 @@ def main():
         if speed <= 0.0:
             status_label.configure(text="Set Motor V above 0, then Start")
             return
-        remaining_motor_move_rad[0] = math.radians(motor_move_degrees)
-        status_label.configure(text=f"Moving motor {format_degrees(motor_move_degrees)} deg")
 
-    def stop():
-        remaining_motor_move_rad[0] = 0.0
-        speed_var.set(0.0)
-        status_label.configure(text="Stopped")
+        # Capture every selected path against the current, unmoved G1 position.
+        # Without this Start-time capture, clicking a new selector and quickly
+        # pressing Start could let the first motor step occur before the normal
+        # UI refresh noticed the engagement, shortening the output move.
+        with viewer.lock():
+            follower_move_degrees = -motor_move_degrees * (
+                g1_diameter_slider_var.get() / g2_diameter_slider_var.get()
+            )
+            arm_violation = None
+            if arm1_engaged_var.get() or arm2_engaged_var.get():
+                arm_violation = arm_motion_violation(
+                    math.degrees(data.qpos[tg2_qpos_id]),
+                    math.degrees(data.qpos[tg6_qpos_id]),
+                    follower_move_degrees if arm1_engaged_var.get() else 0.0,
+                    follower_move_degrees if arm2_engaged_var.get() else 0.0,
+                    arm1_length_slider_var.get(),
+                    arm2_length_slider_var.get(),
+                )
+            if arm_violation == ARM_CONSTRAINT_ARM1_LIMIT:
+                remaining_motor_move_rad[0] = 0.0
+                status_label.configure(
+                    text=(
+                        "Move rejected: Arm 1 must remain between "
+                        f"-{ARM1_LIMIT_DEGREES:g} and +{ARM1_LIMIT_DEGREES:g} deg"
+                    )
+                )
+                return
+            if arm_violation == ARM_CONSTRAINT_PLATFORM_COLLISION:
+                remaining_motor_move_rad[0] = 0.0
+                status_label.configure(
+                    text="Move rejected: arm or tilt plate would hit upper platform"
+                )
+                return
 
-    def reset_position():
-        motor_angle_rad[0] = 0.0
-        remaining_motor_move_rad[0] = 0.0
-        tilt_x_var.set(DEFAULT_TILT_DEGREES)
-        tilt_y_var.set(DEFAULT_TILT_DEGREES)
-        update_tilt_label(tilt_x_label, "X", DEFAULT_TILT_DEGREES)
-        update_tilt_label(tilt_y_label, "Y", DEFAULT_TILT_DEGREES)
-        arm1_drive_offset_rad[0] = 0.0
-        arm2_drive_offset_rad[0] = 0.0
-        g4_drive_offset_rad[0] = 0.0
-        g5_drive_offset_rad[0] = 0.0
-        g6_drive_offset_rad[0] = 0.0
-        g4_spool_reference_rad[0] = 0.0
-        g5_spool_reference_rad[0] = 0.0
-        y_tilt_reference_rad[0] = 0.0
-        x_tilt_reference_rad[0] = 0.0
-        g6_reference_rad[0] = 0.0
-        turntable_reference_rad[0] = 0.0
-        last_spool_diameter_mm[0] = spool_diameter_slider_var.get()
+            current_g1_angle_rad = g1_angle_from_motor(motor_angle_rad[0])
+            current_follower_target_rad = g2_angle_from_g1(
+                current_g1_angle_rad,
+                g1_diameter_slider_var.get(),
+                g2_diameter_slider_var.get(),
+            )
+            if arm1_engaged_var.get():
+                arm1_drive_offset_rad[0] = (
+                    data.qpos[tg2_qpos_id] - current_follower_target_rad
+                )
+            if arm2_engaged_var.get():
+                arm2_drive_offset_rad[0] = (
+                    data.qpos[tg6_qpos_id] - current_follower_target_rad
+                )
+            if g4_engaged_var.get():
+                g4_drive_offset_rad[0] = (
+                    data.qpos[g4_qpos_id] - current_follower_target_rad
+                )
+                g4_spool_reference_rad[0] = data.qpos[g4_qpos_id]
+                y_tilt_reference_rad[0] = data.qpos[plate_y_tilt_qpos_id]
+            if g5_engaged_var.get():
+                g5_drive_offset_rad[0] = (
+                    data.qpos[g5_qpos_id] - current_follower_target_rad
+                )
+                g5_spool_reference_rad[0] = data.qpos[g5_qpos_id]
+                x_tilt_reference_rad[0] = data.qpos[plate_x_tilt_qpos_id]
+            if g6_engaged_var.get():
+                g6_drive_offset_rad[0] = (
+                    data.qpos[g6_qpos_id] - current_follower_target_rad
+                )
+                g6_reference_rad[0] = data.qpos[g6_qpos_id]
+                turntable_reference_rad[0] = data.qpos[turntable_qpos_id]
+
         arm1_was_engaged[0] = arm1_engaged_var.get()
         arm2_was_engaged[0] = arm2_engaged_var.get()
         g4_was_engaged[0] = g4_engaged_var.get()
         g5_was_engaged[0] = g5_engaged_var.get()
         g6_was_engaged[0] = g6_engaged_var.get()
-        with viewer.lock():
-            for qpos_id in (
-                g1_qpos_id,
-                g2_qpos_id,
-                g3_qpos_id,
-                g4_qpos_id,
-                g5_qpos_id,
-                g6_qpos_id,
-                turntable_qpos_id,
-                tg2_qpos_id,
-                tg4_qpos_id,
-                tg6_qpos_id,
-                plate_x_tilt_qpos_id,
-                plate_y_tilt_qpos_id,
-            ):
-                data.qpos[qpos_id] = 0.0
-            set_gear_layout(
-                model,
-                g1_diameter_slider_var.get(),
-                g2_diameter_slider_var.get(),
-                0.0,
-                spool_diameter_mm=spool_diameter_slider_var.get(),
-            )
-            mujoco.mj_forward(model, data)
-        status_label.configure(text="Position reset")
+        remaining_motor_move_rad[0] = math.radians(motor_move_degrees)
+        status_label.configure(text=f"Moving {move_description}")
 
-    ttk.Button(frame, text="Start", command=start_move).grid(row=5, column=0, sticky="ew", padx=(0, 6))
-    ttk.Button(frame, text="Stop", command=stop).grid(row=5, column=1, sticky="ew")
-    ttk.Button(frame, text="Reset position", command=reset_position).grid(
-        row=6,
+    def stop():
+        remaining_motor_move_rad[0] = 0.0
+        if reset_active[0]:
+            set_all_selectors(False)
+        cancel_physical_reset()
+        speed_var.set(0.0)
+        status_label.configure(text="Stopped")
+
+    def reset_position():
+        commit_diameter_entry(g1_diameter_entry_var, g1_diameter_slider_var)
+        commit_diameter_entry(g2_diameter_entry_var, g2_diameter_slider_var)
+        commit_spool_diameter_entry()
+        commit_arm_length_entry(arm1_length_entry_var, arm1_length_slider_var)
+        commit_arm_length_entry(arm2_length_entry_var, arm2_length_slider_var)
+        remaining_motor_move_rad[0] = 0.0
+        set_all_selectors(False)
+        reset_queue[:] = [
+            ("X tilt / G5", "x_tilt", g5_qpos_id),
+            ("Y tilt / G4", "y_tilt", g4_qpos_id),
+            ("Arm 2 / G3", "arm2", g3_qpos_id),
+            ("Arm 1 / G2", "arm1", g2_qpos_id),
+            ("Turntable / G6", "turntable", g6_qpos_id),
+        ]
+        reset_current_axis[0] = None
+        reset_active[0] = True
+        status_label.configure(
+            text=f"Physical reset queued at {format_number(RESET_VELOCITY_DEG_S)} deg/s"
+        )
+
+    def finish_reset_axis(axis_key):
+        if axis_key == "x_tilt":
+            data.qpos[g5_qpos_id] = 0.0
+            data.qpos[plate_x_tilt_qpos_id] = 0.0
+            tilt_x_var.set(0.0)
+            update_tilt_label(tilt_x_label, "X", 0.0)
+        elif axis_key == "y_tilt":
+            data.qpos[g4_qpos_id] = 0.0
+            data.qpos[plate_y_tilt_qpos_id] = 0.0
+            tilt_y_var.set(0.0)
+            update_tilt_label(tilt_y_label, "Y", 0.0)
+        elif axis_key == "arm2":
+            data.qpos[g3_qpos_id] = 0.0
+            data.qpos[tg4_qpos_id] = 0.0
+            data.qpos[tg6_qpos_id] = 0.0
+        elif axis_key == "arm1":
+            data.qpos[g2_qpos_id] = 0.0
+            data.qpos[tg2_qpos_id] = 0.0
+        elif axis_key == "turntable":
+            data.qpos[g6_qpos_id] = 0.0
+            data.qpos[turntable_qpos_id] = 0.0
+
+    def begin_next_reset_axis(g1_diameter_mm, g2_diameter_mm):
+        gear_ratio = g1_diameter_mm / g2_diameter_mm
+        g1_angle_rad = g1_angle_from_motor(motor_angle_rad[0])
+        g2_angle_rad = g2_angle_from_g1(
+            g1_angle_rad,
+            g1_diameter_mm,
+            g2_diameter_mm,
+        )
+
+        while reset_queue:
+            label, axis_key, encoder_qpos_id = reset_queue.pop(0)
+            encoder_angle_rad = float(data.qpos[encoder_qpos_id])
+            # Arm and turntable orientations repeat every revolution. Cable
+            # spool positions do not: another spool revolution changes cable
+            # length, so G4/G5 retain their multi-turn error to the unique
+            # zero-cable position.
+            if axis_key in ("x_tilt", "y_tilt"):
+                encoder_error_rad = encoder_angle_rad
+            else:
+                encoder_error_rad = shortest_angular_error_to_zero(
+                    encoder_angle_rad
+                )
+            if abs(encoder_error_rad) < 1e-10:
+                finish_reset_axis(axis_key)
+                continue
+
+            engage_only_reset_axis(axis_key)
+            if axis_key == "x_tilt":
+                g5_drive_offset_rad[0] = data.qpos[g5_qpos_id] - g2_angle_rad
+                g5_spool_reference_rad[0] = data.qpos[g5_qpos_id]
+                x_tilt_reference_rad[0] = data.qpos[plate_x_tilt_qpos_id]
+            elif axis_key == "y_tilt":
+                g4_drive_offset_rad[0] = data.qpos[g4_qpos_id] - g2_angle_rad
+                g4_spool_reference_rad[0] = data.qpos[g4_qpos_id]
+                y_tilt_reference_rad[0] = data.qpos[plate_y_tilt_qpos_id]
+            elif axis_key == "arm2":
+                arm2_drive_offset_rad[0] = data.qpos[tg6_qpos_id] - g2_angle_rad
+            elif axis_key == "arm1":
+                arm1_drive_offset_rad[0] = data.qpos[tg2_qpos_id] - g2_angle_rad
+            elif axis_key == "turntable":
+                g6_drive_offset_rad[0] = data.qpos[g6_qpos_id] - g2_angle_rad
+                g6_reference_rad[0] = data.qpos[g6_qpos_id]
+                turntable_reference_rad[0] = data.qpos[turntable_qpos_id]
+
+            arm1_was_engaged[0] = arm1_engaged_var.get()
+            arm2_was_engaged[0] = arm2_engaged_var.get()
+            g4_was_engaged[0] = g4_engaged_var.get()
+            g5_was_engaged[0] = g5_engaged_var.get()
+            g6_was_engaged[0] = g6_engaged_var.get()
+            reset_current_axis[0] = (label, axis_key)
+            remaining_motor_move_rad[0] = encoder_error_rad / gear_ratio
+            status_label.configure(
+                text=f"Resetting {label} at {format_number(RESET_VELOCITY_DEG_S)} deg/s"
+            )
+            return
+
+        set_all_selectors(False)
+        reset_current_axis[0] = None
+        reset_active[0] = False
+        status_label.configure(text="Physical reset complete")
+
+    ttk.Button(frame, text="Start", command=start_move).grid(row=6, column=0, sticky="ew", padx=(0, 6))
+    ttk.Button(frame, text="Stop", command=stop).grid(row=6, column=1, sticky="ew")
+    ttk.Button(frame, text="Physical reset", command=reset_position).grid(
+        row=7,
         column=0,
         columnspan=2,
         sticky="ew",
@@ -820,6 +1354,8 @@ def main():
         g1_diameter_slider_var.get(),
         g2_diameter_slider_var.get(),
         spool_diameter_mm=spool_diameter_slider_var.get(),
+        arm1_length_mm=arm1_length_slider_var.get(),
+        arm2_length_mm=arm2_length_slider_var.get(),
     )
     pip_renderer = mujoco.Renderer(model, height=PIP_HEIGHT, width=PIP_WIDTH)
     pip_photo = [None]
@@ -856,10 +1392,18 @@ def main():
             g1_diameter_mm = g1_diameter_slider_var.get()
             g2_diameter_mm = g2_diameter_slider_var.get()
             spool_diameter_mm = spool_diameter_slider_var.get()
+            arm1_length_mm = arm1_length_slider_var.get()
+            arm2_length_mm = arm2_length_slider_var.get()
             speed = speed_var.get()
-            speed_label.configure(text=f"Motor V: {speed:.1f} deg/s")
+            motion_speed = RESET_VELOCITY_DEG_S if reset_active[0] else speed
+            if reset_active[0]:
+                speed_label.configure(text=f"Reset V: {RESET_VELOCITY_DEG_S:.1f} deg/s")
+            else:
+                speed_label.configure(text=f"Motor V: {speed:.1f} deg/s")
             plate_x_tilt_rad = math.radians(tilt_x_var.get())
             plate_y_tilt_rad = math.radians(tilt_y_var.get())
+            if reset_active[0] and reset_current_axis[0] is not None:
+                engage_only_reset_axis(reset_current_axis[0][1])
             g4_is_engaged = g4_engaged_var.get()
             g5_is_engaged = g5_engaged_var.get()
             g6_is_engaged = g6_engaged_var.get()
@@ -872,8 +1416,25 @@ def main():
             pip_pixels = None
 
             with viewer.lock():
-                if abs(remaining_motor_move_rad[0]) > 0.0 and speed > 0.0:
-                    max_step = math.radians(speed) * elapsed
+                if reset_active[0] and abs(remaining_motor_move_rad[0]) <= 0.0:
+                    if reset_current_axis[0] is not None:
+                        _, completed_axis_key = reset_current_axis[0]
+                        finish_reset_axis(completed_axis_key)
+                        reset_current_axis[0] = None
+                        set_all_selectors(False)
+                    begin_next_reset_axis(g1_diameter_mm, g2_diameter_mm)
+
+                    # A completed reset step may have set an exact zero and
+                    # updated the readout variables after these locals were
+                    # sampled at the start of the tick.
+                    plate_x_tilt_rad = math.radians(tilt_x_var.get())
+                    plate_y_tilt_rad = math.radians(tilt_y_var.get())
+                    g4_is_engaged = g4_engaged_var.get()
+                    g5_is_engaged = g5_engaged_var.get()
+                    g6_is_engaged = g6_engaged_var.get()
+
+                if abs(remaining_motor_move_rad[0]) > 0.0 and motion_speed > 0.0:
+                    max_step = math.radians(motion_speed) * elapsed
                     step = math.copysign(
                         min(abs(remaining_motor_move_rad[0]), max_step),
                         remaining_motor_move_rad[0],
@@ -882,7 +1443,12 @@ def main():
                     remaining_motor_move_rad[0] -= step
                     if abs(remaining_motor_move_rad[0]) < 1e-6:
                         remaining_motor_move_rad[0] = 0.0
-                        status_label.configure(text="Move complete")
+                        if reset_active[0] and reset_current_axis[0] is not None:
+                            status_label.configure(
+                                text=f"{reset_current_axis[0][0]} encoder at reset"
+                            )
+                        else:
+                            status_label.configure(text="Move complete")
                 g1_angle_rad = g1_angle_from_motor(motor_angle_rad[0])
                 g2_angle_rad = g2_angle_from_g1(g1_angle_rad, g1_diameter_mm, g2_diameter_mm)
                 data.qpos[g1_qpos_id] = g1_angle_rad
@@ -971,6 +1537,8 @@ def main():
                     g2_diameter_mm,
                     data.qpos[tg2_qpos_id],
                     spool_diameter_mm=spool_diameter_mm,
+                    arm1_length_mm=arm1_length_mm,
+                    arm2_length_mm=arm2_length_mm,
                 )
                 data.time += elapsed
                 mujoco.mj_forward(model, data)

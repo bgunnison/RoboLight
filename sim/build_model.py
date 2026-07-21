@@ -10,6 +10,12 @@ OUTPUT_PATH = SIM_DIR / "simple_motor_gear.mjb"
 REQUIRED_BODIES = ("turntable", "G1", "G2", "G3", "G4", "G5", "G6", "tilt_plate_body")
 REQUIRED_JOINTS = ("gear_hinge", "plate_x_tilt", "plate_y_tilt", "turntable_yaw")
 REQUIRED_CAMERAS = ("view", "spotlight_camera")
+REQUIRED_GEOMS = (
+    "turntable_disk",
+    "turntable_mark",
+    "upper_turntable_disk",
+    "upper_turntable_mark",
+)
 
 
 def require_named_objects(model, object_type, names):
@@ -23,6 +29,7 @@ def main():
     require_named_objects(model, mujoco.mjtObj.mjOBJ_BODY, REQUIRED_BODIES)
     require_named_objects(model, mujoco.mjtObj.mjOBJ_JOINT, REQUIRED_JOINTS)
     require_named_objects(model, mujoco.mjtObj.mjOBJ_CAMERA, REQUIRED_CAMERAS)
+    require_named_objects(model, mujoco.mjtObj.mjOBJ_GEOM, REQUIRED_GEOMS)
 
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
