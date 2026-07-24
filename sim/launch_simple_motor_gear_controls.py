@@ -8,6 +8,11 @@ import mujoco
 import mujoco.viewer
 from PIL import Image, ImageTk
 
+try:
+    from sim.generate_room_meshes import ensure_room_meshes
+except ModuleNotFoundError:
+    from generate_room_meshes import ensure_room_meshes
+
 
 ROOT = Path(__file__).resolve().parent
 MODEL_PATH = ROOT / "simple_motor_gear.xml"
@@ -95,6 +100,10 @@ TG6_JOINT = "tg6_hinge"
 PLATE_X_TILT_JOINT = "plate_x_tilt"
 PLATE_Y_TILT_JOINT = "plate_y_tilt"
 SPOTLIGHT_CAMERA = "spotlight_camera"
+SPOTLIGHT_LIGHT = "plate_spotlight"
+TARGET_ORIGIN_BODY = "target_origin_frame"
+TARGET_BODY = "camera_target"
+TARGET_GEOM = "camera_target_sphere"
 G2_BODY = "G2"
 G3_BODY = "G3"
 G4_BODY = "G4"
@@ -199,6 +208,34 @@ PLATE_CABLE_LEVER_ARM_M = 0.025
 ARM1_LIMIT_DEGREES = 80.0
 MIN_ARM1_LIMIT_DEGREES = 1.0
 MAX_ARM1_LIMIT_DEGREES = 180.0
+DEFAULT_BEAM_ANGLE_DEGREES = 50.0
+MIN_BEAM_ANGLE_DEGREES = 10.0
+MAX_BEAM_ANGLE_DEGREES = 120.0
+DEFAULT_CAMERA_FOV_DEGREES = 50.0
+MIN_CAMERA_FOV_DEGREES = 10.0
+MAX_CAMERA_FOV_DEGREES = 170.0
+DEFAULT_TARGET_X_CM = 0.0
+DEFAULT_TARGET_Y_CM = -6.4
+DEFAULT_TARGET_Z_CM = 55.0
+MIN_TARGET_X_CM = -35.0
+MAX_TARGET_X_CM = 35.0
+MIN_TARGET_Y_CM = -18.0
+MAX_TARGET_Y_CM = 38.0
+MIN_TARGET_Z_CM = -10.0
+MAX_TARGET_Z_CM = 65.0
+DEFAULT_TARGET_DIAMETER_CM = 2.0
+MIN_TARGET_DIAMETER_CM = 0.5
+MAX_TARGET_DIAMETER_CM = 3.0
+TARGET_COLORS = {
+    "red": (0.90, 0.04, 0.03, 1.0),
+    "green": (0.05, 0.78, 0.16, 1.0),
+    "blue": (0.08, 0.28, 0.92, 1.0),
+    "yellow": (0.95, 0.82, 0.08, 1.0),
+    "orange": (0.95, 0.38, 0.05, 1.0),
+    "cyan": (0.05, 0.82, 0.88, 1.0),
+    "magenta": (0.88, 0.08, 0.74, 1.0),
+    "white": (0.95, 0.95, 0.95, 1.0),
+}
 UPPER_TURNTABLE_TOP_Z_M = 0.170
 ARM_LINK_HALF_WIDTH_M = 0.006
 TILT_PLATE_HALF_LENGTH_M = 0.025
@@ -229,6 +266,92 @@ def format_number(value):
 
 def radius_m(diameter_mm):
     return diameter_mm / 2000.0
+
+
+def normalize_target_color(color):
+    """Return an RGBA tuple for a named color or RGB/RGBA iterable."""
+
+    if isinstance(color, str):
+        normalized = TARGET_COLORS.get(color.strip().lower())
+        if normalized is None:
+            valid = ", ".join(TARGET_COLORS)
+            raise ValueError(f"Unknown target color {color!r}; choose from: {valid}")
+        return normalized
+    try:
+        components = tuple(float(component) for component in color)
+    except (TypeError, ValueError) as exc:
+        raise TypeError("target color must be a name or RGB/RGBA iterable") from exc
+    if len(components) == 3:
+        components += (1.0,)
+    if len(components) != 4 or any(
+        not math.isfinite(component) or not 0.0 <= component <= 1.0
+        for component in components
+    ):
+        raise ValueError("target color components must be finite values from 0 to 1")
+    return components
+
+
+def set_spotlight_beam_angle(model, beam_angle_degrees):
+    """Set the full spotlight cone angle without changing the camera FOV."""
+
+    light_id = mujoco.mj_name2id(
+        model,
+        mujoco.mjtObj.mjOBJ_LIGHT,
+        SPOTLIGHT_LIGHT,
+    )
+    model.light_cutoff[light_id] = beam_angle_degrees / 2.0
+
+
+def set_spotlight_camera_fov(model, camera_fov_degrees):
+    """Set the fixed spotlight-camera vertical field of view."""
+
+    camera_id = mujoco.mj_name2id(
+        model,
+        mujoco.mjtObj.mjOBJ_CAMERA,
+        SPOTLIGHT_CAMERA,
+    )
+    model.cam_fovy[camera_id] = camera_fov_degrees
+
+
+def set_target_layout(
+    model,
+    g1_diameter_mm,
+    follower_diameter_mm,
+    x_cm,
+    y_cm,
+    z_cm,
+    diameter_cm=DEFAULT_TARGET_DIAMETER_CM,
+    color="red",
+):
+    """Position the room-fixed camera target relative to the Arm 1 start."""
+
+    target_origin_id = mujoco.mj_name2id(
+        model,
+        mujoco.mjtObj.mjOBJ_BODY,
+        TARGET_ORIGIN_BODY,
+    )
+    target_body_id = mujoco.mj_name2id(
+        model,
+        mujoco.mjtObj.mjOBJ_BODY,
+        TARGET_BODY,
+    )
+    target_geom_id = mujoco.mj_name2id(
+        model,
+        mujoco.mjtObj.mjOBJ_GEOM,
+        TARGET_GEOM,
+    )
+    model.body_pos[target_origin_id] = (
+        radius_m(g1_diameter_mm) + radius_m(follower_diameter_mm),
+        TIMING_GEAR_Y,
+        G2_CENTER_Z + BELT_CENTER_DISTANCE_M,
+    )
+    model.body_pos[target_body_id] = (
+        x_cm / 100.0,
+        y_cm / 100.0,
+        z_cm / 100.0,
+    )
+    model.geom_size[target_geom_id, 0] = diameter_cm / 200.0
+    model.geom_rgba[target_geom_id] = normalize_target_color(color)
 
 
 def turntable_radius_m(g1_diameter_mm, follower_diameter_mm):
@@ -643,6 +766,7 @@ def shortest_angular_error_to_zero(angle_rad):
 
 
 def main():
+    ensure_room_meshes()
     model = mujoco.MjModel.from_xml_path(str(MODEL_PATH))
     data = mujoco.MjData(model)
 
@@ -685,6 +809,19 @@ def main():
     arm1_length_entry_var = tk.StringVar(value=format_number(DEFAULT_ARM1_LENGTH_MM))
     arm2_length_slider_var = tk.DoubleVar(value=DEFAULT_ARM2_LENGTH_MM)
     arm2_length_entry_var = tk.StringVar(value=format_number(DEFAULT_ARM2_LENGTH_MM))
+    beam_angle_slider_var = tk.DoubleVar(value=DEFAULT_BEAM_ANGLE_DEGREES)
+    beam_angle_entry_var = tk.StringVar(value=format_number(DEFAULT_BEAM_ANGLE_DEGREES))
+    target_x_slider_var = tk.DoubleVar(value=DEFAULT_TARGET_X_CM)
+    target_x_entry_var = tk.StringVar(value=format_number(DEFAULT_TARGET_X_CM))
+    target_y_slider_var = tk.DoubleVar(value=DEFAULT_TARGET_Y_CM)
+    target_y_entry_var = tk.StringVar(value=format_number(DEFAULT_TARGET_Y_CM))
+    target_z_slider_var = tk.DoubleVar(value=DEFAULT_TARGET_Z_CM)
+    target_z_entry_var = tk.StringVar(value=format_number(DEFAULT_TARGET_Z_CM))
+    target_diameter_slider_var = tk.DoubleVar(value=DEFAULT_TARGET_DIAMETER_CM)
+    target_diameter_entry_var = tk.StringVar(
+        value=format_number(DEFAULT_TARGET_DIAMETER_CM)
+    )
+    target_color_var = tk.StringVar(value="red")
     speed_var = tk.DoubleVar(value=DEFAULT_SPEED_DEG_S)
     rotation_slider_var = tk.DoubleVar(value=DEFAULT_MOVE_DEGREES)
     rotation_entry_var = tk.StringVar(value=format_degrees(DEFAULT_MOVE_DEGREES))
@@ -733,11 +870,112 @@ def main():
     )
     pip_canvas.grid(row=0, column=0)
     pip_image_item = pip_canvas.create_image(0, 0, anchor="nw")
-    ttk.Label(pip_frame, text="50 deg view aligned with the spotlight beam").grid(
+    pip_description_var = tk.StringVar(
+        value=(
+            f"{format_number(DEFAULT_CAMERA_FOV_DEGREES)} deg fixed camera FOV; "
+            f"{format_number(DEFAULT_BEAM_ANGLE_DEGREES)} deg spotlight beam"
+        )
+    )
+    ttk.Label(pip_frame, textvariable=pip_description_var).grid(
         row=1,
         column=0,
         pady=(6, 0),
     )
+
+    beam_frame = ttk.LabelFrame(pip_frame, text="Spotlight", padding=6)
+    beam_frame.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+    beam_frame.columnconfigure(0, weight=1)
+    ttk.Label(beam_frame, text="Full beam angle (deg)").grid(
+        row=0,
+        column=0,
+        sticky="w",
+    )
+    beam_angle_entry = ttk.Entry(
+        beam_frame,
+        textvariable=beam_angle_entry_var,
+        width=9,
+    )
+    beam_angle_entry.grid(row=0, column=1, sticky="e")
+    beam_angle_slider = ttk.Scale(
+        beam_frame,
+        from_=MIN_BEAM_ANGLE_DEGREES,
+        to=MAX_BEAM_ANGLE_DEGREES,
+        variable=beam_angle_slider_var,
+        orient="horizontal",
+        length=295,
+    )
+    beam_angle_slider.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(2, 0))
+
+    target_frame = ttk.LabelFrame(
+        pip_frame,
+        text="Camera target — origin at Arm 1 start",
+        padding=6,
+    )
+    target_frame.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+    target_frame.columnconfigure(0, weight=1)
+
+    def add_target_control(row, label_text, entry_var, slider_var, minimum, maximum):
+        ttk.Label(target_frame, text=label_text).grid(row=row, column=0, sticky="w")
+        entry = ttk.Entry(target_frame, textvariable=entry_var, width=9)
+        entry.grid(row=row, column=1, sticky="e")
+        slider = ttk.Scale(
+            target_frame,
+            from_=minimum,
+            to=maximum,
+            variable=slider_var,
+            orient="horizontal",
+            length=295,
+        )
+        slider.grid(
+            row=row + 1,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(1, 5),
+        )
+        return entry, slider
+
+    target_x_entry, target_x_slider = add_target_control(
+        0,
+        "Target X (cm)",
+        target_x_entry_var,
+        target_x_slider_var,
+        MIN_TARGET_X_CM,
+        MAX_TARGET_X_CM,
+    )
+    target_y_entry, target_y_slider = add_target_control(
+        2,
+        "Target Y (cm)",
+        target_y_entry_var,
+        target_y_slider_var,
+        MIN_TARGET_Y_CM,
+        MAX_TARGET_Y_CM,
+    )
+    target_z_entry, target_z_slider = add_target_control(
+        4,
+        "Target Z (cm)",
+        target_z_entry_var,
+        target_z_slider_var,
+        MIN_TARGET_Z_CM,
+        MAX_TARGET_Z_CM,
+    )
+    target_diameter_entry, target_diameter_slider = add_target_control(
+        6,
+        "Sphere diameter (cm)",
+        target_diameter_entry_var,
+        target_diameter_slider_var,
+        MIN_TARGET_DIAMETER_CM,
+        MAX_TARGET_DIAMETER_CM,
+    )
+    ttk.Label(target_frame, text="Target color").grid(row=8, column=0, sticky="w")
+    target_color_combo = ttk.Combobox(
+        target_frame,
+        textvariable=target_color_var,
+        values=tuple(TARGET_COLORS),
+        state="readonly",
+        width=10,
+    )
+    target_color_combo.grid(row=8, column=1, sticky="e")
 
     speed_label = ttk.Label(frame, width=24)
     speed_label.grid(row=0, column=0, columnspan=2, sticky="w")
@@ -984,6 +1222,22 @@ def main():
         entry_var.set(format_number(length))
         return True
 
+    def commit_bounded_entry(
+        entry_var,
+        slider_var,
+        minimum,
+        maximum,
+        _event=None,
+    ):
+        try:
+            value = float(entry_var.get())
+        except ValueError:
+            value = slider_var.get()
+        value = max(minimum, min(maximum, value))
+        slider_var.set(value)
+        entry_var.set(format_number(value))
+        return True
+
     rotation_slider.configure(command=update_rotation_entry)
     rotation_entry.bind("<Return>", commit_rotation_entry)
     rotation_entry.bind("<FocusOut>", commit_rotation_entry)
@@ -1048,6 +1302,90 @@ def main():
             event,
         ),
     )
+    bounded_controls = (
+        (
+            beam_angle_entry,
+            beam_angle_entry_var,
+            beam_angle_slider,
+            beam_angle_slider_var,
+            MIN_BEAM_ANGLE_DEGREES,
+            MAX_BEAM_ANGLE_DEGREES,
+        ),
+        (
+            target_x_entry,
+            target_x_entry_var,
+            target_x_slider,
+            target_x_slider_var,
+            MIN_TARGET_X_CM,
+            MAX_TARGET_X_CM,
+        ),
+        (
+            target_y_entry,
+            target_y_entry_var,
+            target_y_slider,
+            target_y_slider_var,
+            MIN_TARGET_Y_CM,
+            MAX_TARGET_Y_CM,
+        ),
+        (
+            target_z_entry,
+            target_z_entry_var,
+            target_z_slider,
+            target_z_slider_var,
+            MIN_TARGET_Z_CM,
+            MAX_TARGET_Z_CM,
+        ),
+        (
+            target_diameter_entry,
+            target_diameter_entry_var,
+            target_diameter_slider,
+            target_diameter_slider_var,
+            MIN_TARGET_DIAMETER_CM,
+            MAX_TARGET_DIAMETER_CM,
+        ),
+    )
+    for (
+        entry,
+        entry_var,
+        slider,
+        slider_var,
+        minimum,
+        maximum,
+    ) in bounded_controls:
+        slider.configure(
+            command=lambda value, variable=entry_var: update_diameter_entry(
+                variable,
+                value,
+            )
+        )
+        entry.bind(
+            "<Return>",
+            lambda event,
+            variable=entry_var,
+            scale_var=slider_var,
+            low=minimum,
+            high=maximum: commit_bounded_entry(
+                variable,
+                scale_var,
+                low,
+                high,
+                event,
+            ),
+        )
+        entry.bind(
+            "<FocusOut>",
+            lambda event,
+            variable=entry_var,
+            scale_var=slider_var,
+            low=minimum,
+            high=maximum: commit_bounded_entry(
+                variable,
+                scale_var,
+                low,
+                high,
+                event,
+            ),
+        )
 
     def set_all_selectors(engaged=False):
         arm1_engaged_var.set(engaged)
@@ -1357,6 +1695,17 @@ def main():
         arm1_length_mm=arm1_length_slider_var.get(),
         arm2_length_mm=arm2_length_slider_var.get(),
     )
+    set_spotlight_beam_angle(model, beam_angle_slider_var.get())
+    set_target_layout(
+        model,
+        g1_diameter_slider_var.get(),
+        g2_diameter_slider_var.get(),
+        target_x_slider_var.get(),
+        target_y_slider_var.get(),
+        target_z_slider_var.get(),
+        target_diameter_slider_var.get(),
+        target_color_var.get(),
+    )
     pip_renderer = mujoco.Renderer(model, height=PIP_HEIGHT, width=PIP_WIDTH)
     pip_photo = [None]
     pip_renderer_closed = [False]
@@ -1394,12 +1743,22 @@ def main():
             spool_diameter_mm = spool_diameter_slider_var.get()
             arm1_length_mm = arm1_length_slider_var.get()
             arm2_length_mm = arm2_length_slider_var.get()
+            beam_angle_degrees = beam_angle_slider_var.get()
+            target_x_cm = target_x_slider_var.get()
+            target_y_cm = target_y_slider_var.get()
+            target_z_cm = target_z_slider_var.get()
+            target_diameter_cm = target_diameter_slider_var.get()
+            target_color = target_color_var.get()
             speed = speed_var.get()
             motion_speed = RESET_VELOCITY_DEG_S if reset_active[0] else speed
             if reset_active[0]:
                 speed_label.configure(text=f"Reset V: {RESET_VELOCITY_DEG_S:.1f} deg/s")
             else:
                 speed_label.configure(text=f"Motor V: {speed:.1f} deg/s")
+            pip_description_var.set(
+                f"{format_number(DEFAULT_CAMERA_FOV_DEGREES)} deg fixed camera FOV; "
+                f"{format_number(beam_angle_degrees)} deg spotlight beam"
+            )
             plate_x_tilt_rad = math.radians(tilt_x_var.get())
             plate_y_tilt_rad = math.radians(tilt_y_var.get())
             if reset_active[0] and reset_current_axis[0] is not None:
@@ -1539,6 +1898,17 @@ def main():
                     spool_diameter_mm=spool_diameter_mm,
                     arm1_length_mm=arm1_length_mm,
                     arm2_length_mm=arm2_length_mm,
+                )
+                set_spotlight_beam_angle(model, beam_angle_degrees)
+                set_target_layout(
+                    model,
+                    g1_diameter_mm,
+                    g2_diameter_mm,
+                    target_x_cm,
+                    target_y_cm,
+                    target_z_cm,
+                    target_diameter_cm,
+                    target_color,
                 )
                 data.time += elapsed
                 mujoco.mj_forward(model, data)

@@ -28,6 +28,8 @@ DEMO_HARDWARE = HWDesc(
     arm1_length_mm=150.0,
     arm2_length_mm=150.0,
     arm1_limit_degrees=80.0,
+    beam_angle_degrees=50.0,
+    camera_fov_degrees=50.0,
 )
 
 
@@ -39,6 +41,8 @@ def main() -> None:
     try:
         light.open_viewer()
         light.open_pip()
+        light.set_target(0.0, -6.4, 55.0, color="red", diameter_cm=2.0)
+        print("Target: (0.0, -6.4, 55.0) cm, red, 2.0 cm diameter")
 
         # move() angles and velocities are selected-output units.
         moves = (

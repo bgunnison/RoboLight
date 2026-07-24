@@ -20,6 +20,11 @@ Motor/G1 angle and simulation time advance normally during that sequence.
 This module implements the current kinematic simulation, not the complete
 product control loop. Camera pointer recognition, manual-displacement sensing,
 the planned Hijacked mode, and its blinking status LED are not implemented yet.
+For camera experiments, a room-fixed colored sphere can be positioned in
+centimeters with ``set_target()``. Its origin is the initial Arm 1 pivot and its
+axes remain parallel to the room axes. ``HWDesc.beam_angle_degrees`` controls
+the spotlight's full cone angle, while ``HWDesc.camera_fov_degrees`` separately
+describes the fixed field of view of the selected camera.
 
 The mechanism-level ``move()`` API accepts the selected output's displacement
 and speed, then translates them into motor/G1 motion using gear, spool, and
@@ -38,9 +43,17 @@ Typical use::
 
     from scripts import HWDesc, MoveError, RoboLight, Selector
 
-    light = RoboLight(HWDesc(spool_diameter_mm=10), realtime=True)
+    light = RoboLight(
+        HWDesc(
+            spool_diameter_mm=10,
+            beam_angle_degrees=50,
+            camera_fov_degrees=50,
+        ),
+        realtime=True,
+    )
     light.open_viewer()
     light.open_pip()
+    light.set_target(0, -6.4, 55, color="red", diameter_cm=2)
     result = light.move(Selector.ARM1, velocity=30, degrees=20)
     if result is not MoveError.OK:
         raise RuntimeError(f"Arm 1 move rejected: {result.value}")
@@ -70,6 +83,7 @@ import mujoco.viewer
 import numpy as np
 from PIL import Image, ImageTk
 
+from sim.generate_room_meshes import ensure_room_meshes
 from sim.launch_simple_motor_gear_controls import (
     ARM_CONSTRAINT_ARM1_LIMIT,
     ARM_CONSTRAINT_PLATFORM_COLLISION,
@@ -78,8 +92,14 @@ from sim.launch_simple_motor_gear_controls import (
     DEFAULT_G2_DIAMETER_MM,
     DEFAULT_ARM1_LENGTH_MM,
     DEFAULT_ARM2_LENGTH_MM,
+    DEFAULT_BEAM_ANGLE_DEGREES,
+    DEFAULT_CAMERA_FOV_DEGREES,
     DEFAULT_SPEED_DEG_S,
     DEFAULT_SPOOL_DIAMETER_MM,
+    DEFAULT_TARGET_DIAMETER_CM,
+    DEFAULT_TARGET_X_CM,
+    DEFAULT_TARGET_Y_CM,
+    DEFAULT_TARGET_Z_CM,
     G1_JOINT,
     G2_JOINT,
     G3_JOINT,
@@ -89,6 +109,8 @@ from sim.launch_simple_motor_gear_controls import (
     MAX_DIAMETER_MM,
     MAX_ARM_LENGTH_MM,
     MAX_ARM1_LIMIT_DEGREES,
+    MAX_BEAM_ANGLE_DEGREES,
+    MAX_CAMERA_FOV_DEGREES,
     MAX_MOVE_DEGREES,
     MAX_SPEED_DEG_S,
     MAX_SPOOL_DIAMETER_MM,
@@ -96,9 +118,13 @@ from sim.launch_simple_motor_gear_controls import (
     MIN_DIAMETER_MM,
     MIN_ARM_LENGTH_MM,
     MIN_ARM1_LIMIT_DEGREES,
+    MIN_BEAM_ANGLE_DEGREES,
+    MIN_CAMERA_FOV_DEGREES,
     MIN_MOVE_DEGREES,
     MIN_SPOOL_DIAMETER_MM,
     MIN_TILT_DEGREES,
+    MIN_TARGET_DIAMETER_CM,
+    MAX_TARGET_DIAMETER_CM,
     MODEL_PATH,
     PIP_HEIGHT,
     PIP_REFRESH_SECONDS,
@@ -119,7 +145,11 @@ from sim.launch_simple_motor_gear_controls import (
     g1_angle_from_motor,
     g2_angle_from_g1,
     output_degrees_per_motor_degree,
+    normalize_target_color,
     set_gear_layout,
+    set_spotlight_beam_angle,
+    set_spotlight_camera_fov,
+    set_target_layout,
     shortest_angular_error_to_zero,
     tilt_delta_from_spool,
 )
@@ -210,7 +240,7 @@ SELECTOR_ALIASES = {
 
 @dataclass(frozen=True, slots=True)
 class HWDesc:
-    """Adjustable mechanical dimensions shared with the control UI.
+    """Adjustable mechanism, spotlight, and camera hardware configuration.
 
     Attributes:
         g1_diameter_mm: Diameter of the common motor-driven G1 gear. Valid range
@@ -226,6 +256,11 @@ class HWDesc:
             mm.
         arm1_limit_degrees: Symmetric physical travel limit for Arm 1. The
             default is +/-80 degrees; valid magnitudes are 1-180 degrees.
+        beam_angle_degrees: Full spotlight cone angle. Valid range is 10-120
+            degrees. This does not change the camera field of view.
+        camera_fov_degrees: Fixed vertical field of view for the selected
+            spotlight camera. Valid range is 10-170 degrees and defaults to
+            the current camera's 50-degree specification.
     """
 
     g1_diameter_mm: float = DEFAULT_G1_DIAMETER_MM
@@ -234,6 +269,8 @@ class HWDesc:
     arm1_length_mm: float = DEFAULT_ARM1_LENGTH_MM
     arm2_length_mm: float = DEFAULT_ARM2_LENGTH_MM
     arm1_limit_degrees: float = MODEL_ARM1_LIMIT_DEGREES
+    beam_angle_degrees: float = DEFAULT_BEAM_ANGLE_DEGREES
+    camera_fov_degrees: float = DEFAULT_CAMERA_FOV_DEGREES
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,8 +333,9 @@ class RoboLight:
     velocity.
 
     Args:
-        hwdesc: Optional initial hardware dimensions. May be an :class:`HWDesc`
-            or a mapping of hardware field names to millimeter values.
+        hwdesc: Optional initial mechanism, spotlight, and camera hardware
+            configuration. May be an :class:`HWDesc` or a mapping accepted by
+            :meth:`set_hw`.
         model_path: MJCF file to load. Custom models must contain the same named
             joints as the standard RoboLight model.
         realtime: If true, sleep between simulation steps to match requested
@@ -308,7 +346,8 @@ class RoboLight:
         FileNotFoundError: If ``model_path`` does not exist.
         RuntimeError: If a required named joint is missing from the model.
         TypeError: If hardware values are not numeric.
-        ValueError: If dimensions or ``step_seconds`` are outside their limits.
+        ValueError: If a hardware setting or ``step_seconds`` is outside its
+            limits.
     """
 
     _JOINTS = {
@@ -353,12 +392,19 @@ class RoboLight:
 
         self.realtime = bool(realtime)
         self.step_seconds = float(step_seconds)
+        if self._model_path == MODEL_PATH.resolve():
+            ensure_room_meshes()
         self.model = mujoco.MjModel.from_xml_path(str(self._model_path))
         self.data = mujoco.MjData(self.model)
         self._qpos = self._resolve_joint_qpos()
         self._hwdesc = HWDesc()
         self._motor_angle_rad = 0.0
         self._last_selectors = (Selector.G1.value,)
+        self._target_x_cm = DEFAULT_TARGET_X_CM
+        self._target_y_cm = DEFAULT_TARGET_Y_CM
+        self._target_z_cm = DEFAULT_TARGET_Z_CM
+        self._target_diameter_cm = DEFAULT_TARGET_DIAMETER_CM
+        self._target_color_rgba = normalize_target_color("red")
         self._viewer: Any | None = None
         self._pip_root: tk.Tk | None = None
         self._pip_canvas: tk.Canvas | None = None
@@ -485,7 +531,10 @@ class RoboLight:
             )
             canvas.pack(padx=8, pady=(8, 4))
             image_item = canvas.create_image(0, 0, anchor="nw")
-            tk.Label(root, text="50 deg view aligned with the spotlight beam").pack(
+            tk.Label(
+                root,
+                text="Camera FOV from HWDesc; beam angle is independent",
+            ).pack(
                 padx=8,
                 pady=(0, 8),
             )
@@ -526,7 +575,7 @@ class RoboLight:
             self._sync_visuals(force_pip=True)
 
     def set_hw(self, hwdesc: HWDesc | Mapping[str, float]) -> HWDesc:
-        """Apply validated gear, spool, and arm dimensions, preserving pose.
+        """Apply validated mechanism and spotlight settings, preserving pose.
 
         A mapping may provide any subset of the fields in :class:`HWDesc`.
         ``g2_diameter_mm`` and ``g2_g6_diameter_mm`` are accepted as aliases for
@@ -537,10 +586,14 @@ class RoboLight:
         G4/G5 rotation. Changing either arm length resizes its link and moves
         all child hardware at its endpoint. Existing angular gear, arm, tilt,
         and turntable positions do not jump when the description is applied.
+        Changing ``beam_angle_degrees`` updates only the full spotlight cone.
+        ``camera_fov_degrees`` separately configures the fixed field of view
+        associated with the selected camera.
 
         Args:
             hwdesc: Complete :class:`HWDesc` or a mapping containing one or more
-                hardware fields in millimeters.
+                hardware fields. Dimensions use millimeters; spotlight and
+                camera angles use degrees.
 
         Returns:
             The complete hardware description now applied to the model.
@@ -561,7 +614,7 @@ class RoboLight:
             return self._hwdesc
 
     def SetHW(self, hwdesc: HWDesc | Mapping[str, float]) -> HWDesc:  # noqa: N802
-        """Apply hardware dimensions using the controller-style method name.
+        """Apply hardware configuration using the controller-style method name.
 
         This is an exact alias for :meth:`set_hw`. New Python code may prefer
         the lower-case spelling; integrations modeled after a hardware control
@@ -569,6 +622,81 @@ class RoboLight:
         """
 
         return self.set_hw(hwdesc)
+
+    def set_target(
+        self,
+        x: float,
+        y: float,
+        z: float,
+        color: str | Iterable[float] = "red",
+        *,
+        diameter_cm: float | None = None,
+    ) -> None:
+        """Position and color the camera target in the Arm 1 start frame.
+
+        Target coordinates and diameter are expressed in centimeters. The
+        coordinate frame remains parallel to the room/global axes, with
+        ``(0, 0, 0)`` at the initial Arm 1 pivot for the configured gear
+        diameters. The target is fixed in the room and does not rotate with the
+        turntable.
+
+        Args:
+            x: Target X coordinate in centimeters.
+            y: Target Y coordinate in centimeters.
+            z: Target Z coordinate in centimeters.
+            color: Named color (red, green, blue, yellow, orange, cyan,
+                magenta, or white) or an RGB/RGBA iterable with values 0-1.
+            diameter_cm: Optional sphere diameter from 0.5-3 cm. If omitted,
+                preserve the current target diameter.
+
+        Raises:
+            TypeError: If a coordinate, diameter, or color has an unsupported
+                type.
+            ValueError: If a numeric value is non-finite, the diameter is
+                outside 0.5-3 cm, or the color is invalid.
+        """
+
+        with self._lock:
+            x_cm = self._finite_number("x", x)
+            y_cm = self._finite_number("y", y)
+            z_cm = self._finite_number("z", z)
+            if diameter_cm is None:
+                target_diameter_cm = self._target_diameter_cm
+            else:
+                target_diameter_cm = self._finite_number(
+                    "diameter_cm",
+                    diameter_cm,
+                )
+                if not (
+                    MIN_TARGET_DIAMETER_CM
+                    <= target_diameter_cm
+                    <= MAX_TARGET_DIAMETER_CM
+                ):
+                    raise ValueError(
+                        "diameter_cm must be between "
+                        f"{MIN_TARGET_DIAMETER_CM:g} and "
+                        f"{MAX_TARGET_DIAMETER_CM:g}"
+                    )
+            target_color = normalize_target_color(color)
+
+            self._target_x_cm = x_cm
+            self._target_y_cm = y_cm
+            self._target_z_cm = z_cm
+            self._target_diameter_cm = target_diameter_cm
+            self._target_color_rgba = target_color
+            with self._viewer_data_lock():
+                set_target_layout(
+                    self.model,
+                    self._hwdesc.g1_diameter_mm,
+                    self._hwdesc.follower_diameter_mm,
+                    x_cm,
+                    y_cm,
+                    z_cm,
+                    target_diameter_cm,
+                    target_color,
+                )
+                mujoco.mj_forward(self.model, self.data)
+            self._sync_visuals(force_pip=True)
 
     def get_position(self, selector: Selector | str) -> float:
         """Return the current selected-output position in degrees.
@@ -613,7 +741,8 @@ class RoboLight:
         It owns a copy of the rendered pixels, so later simulation updates do
         not mutate an image already returned to the caller. The array can be
         passed to Pillow, OpenCV, scikit-image, or another future image package.
-        Opening the viewer or PIP is not required.
+        The room-fixed sphere configured by :meth:`set_target` appears whenever
+        it is in view. Opening the viewer or PIP is not required.
 
         Returns:
             Fresh ``numpy.ndarray`` containing the current camera image.
@@ -1093,6 +1222,10 @@ class RoboLight:
             "arm2_length_mm": "arm2_length_mm",
             "arm1_limit": "arm1_limit_degrees",
             "arm1_limit_degrees": "arm1_limit_degrees",
+            "beam_angle": "beam_angle_degrees",
+            "beam_angle_degrees": "beam_angle_degrees",
+            "camera_fov": "camera_fov_degrees",
+            "camera_fov_degrees": "camera_fov_degrees",
         }
         values: dict[str, float] = {}
         for key, value in hwdesc.items():
@@ -1130,6 +1263,24 @@ class RoboLight:
             raise ValueError(
                 "arm1_limit_degrees must be between "
                 f"{MIN_ARM1_LIMIT_DEGREES:g} and {MAX_ARM1_LIMIT_DEGREES:g}"
+            )
+        beam_angle = self._finite_number(
+            "beam_angle_degrees",
+            hwdesc.beam_angle_degrees,
+        )
+        if not MIN_BEAM_ANGLE_DEGREES <= beam_angle <= MAX_BEAM_ANGLE_DEGREES:
+            raise ValueError(
+                "beam_angle_degrees must be between "
+                f"{MIN_BEAM_ANGLE_DEGREES:g} and {MAX_BEAM_ANGLE_DEGREES:g}"
+            )
+        camera_fov = self._finite_number(
+            "camera_fov_degrees",
+            hwdesc.camera_fov_degrees,
+        )
+        if not MIN_CAMERA_FOV_DEGREES <= camera_fov <= MAX_CAMERA_FOV_DEGREES:
+            raise ValueError(
+                "camera_fov_degrees must be between "
+                f"{MIN_CAMERA_FOV_DEGREES:g} and {MAX_CAMERA_FOV_DEGREES:g}"
             )
 
     @staticmethod
@@ -1277,6 +1428,24 @@ class RoboLight:
             spool_diameter_mm=self._hwdesc.spool_diameter_mm,
             arm1_length_mm=self._hwdesc.arm1_length_mm,
             arm2_length_mm=self._hwdesc.arm2_length_mm,
+        )
+        set_spotlight_beam_angle(
+            self.model,
+            self._hwdesc.beam_angle_degrees,
+        )
+        set_spotlight_camera_fov(
+            self.model,
+            self._hwdesc.camera_fov_degrees,
+        )
+        set_target_layout(
+            self.model,
+            self._hwdesc.g1_diameter_mm,
+            self._hwdesc.follower_diameter_mm,
+            self._target_x_cm,
+            self._target_y_cm,
+            self._target_z_cm,
+            self._target_diameter_cm,
+            self._target_color_rgba,
         )
 
     def _snapshot(self) -> RoboLightState:

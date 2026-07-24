@@ -21,6 +21,9 @@ The current starter model is intentionally minimal:
 - blue and warm-colored 8 x 8 checkerboard side walls sit about one original mechanism/base width from the mechanism, giving the room a 780 mm clear width
 - a green 8 x 8 checkerboard back wall closes the room, while the 900 mm-high ceiling uses a neutral 8 x 8 checkerboard
 - the checkerboard walls and ceiling provide visible, directional surfaces for the plate-mounted spotlight and camera
+- the checkerboard surface meshes use a 64 x 64 lighting grid so narrow spotlight cones remain visible instead of missing a four-corner wall mesh
+- a room-fixed target coordinate frame has its `(0, 0, 0)` origin at the initial Arm 1 pivot and remains parallel to the room axes when the mechanism rotates
+- the camera target starts as a red 2 cm sphere at `(0, -6.4, 55)` cm; UI controls set X/Y/Z, color, and diameter from 0.5 to 3 cm
 - the shared axle height places a 140 mm `G1` at the turntable top without intersecting the fixed base
 - each follower has an inboard support post from the turntable disk to its axle
 - the `G2` axle stops at the front face of `G2`; a front-mounted timing gear `TG1` is coaxial with `G2`
@@ -33,7 +36,7 @@ The current starter model is intentionally minimal:
 - green `arm2` defaults to 150 mm, is independently adjustable from 75 to 300 mm, and is fixed to `TG6`
 - a 50 mm x 50 mm tilt plate is mounted at the end of `arm2` and faces up at reset
 - a small spotlight is mounted at the center of the plate and follows the plate tilt
-- a camera at the spotlight lens follows the same pose and uses a 50 degree field of view matching the spotlight cone
+- a camera at the spotlight lens follows the same pose and keeps its fixed 50 degree field of view while the spotlight cone changes
 - the control window includes a live 320 x 240 picture-in-picture feed from the spotlight camera
 - the control UI has Arm 1 and Arm 2 selectors; selected-output mode keeps exactly one path engaged, starts with Arm 1, and translates requested output angle into G1 motion
 - unchecking `Rotation targets selected output` enables direct-G1 angle commands and independent multi-path selector experiments
@@ -80,6 +83,8 @@ For a fixed move:
 Changing `Rotation` alone does not move the gear. It is only applied when `Start` is pressed.
 
 Set `G1 diameter`, shared `G2-G6 diameter`, `Spool diameter`, `Arm 1 length`, or `Arm 2 length` with either the number entry boxes or sliders. Arm lengths accept 75-300 mm and default to 150 mm. The launcher recomputes every follower center from `G1 radius + follower radius`, so all five gear circles remain tangent when either gear diameter changes. It also recenters and resizes both turntable disks under the resulting mechanism footprint. Arm length changes preserve joint angles while repositioning the downstream TG6 pivot, belt, tilt plate, flashlight, and spotlight camera.
+
+The target controls use centimeters in the room-fixed frame whose origin is the initial Arm 1 pivot. Changing gear diameters moves that origin to the new pivot while preserving the target's X/Y/Z coordinates. The sphere does not rotate with the turntable. `Beam angle` controls only the full spotlight cone from 10 to 120 degrees; it does not zoom or otherwise change the fixed 50 degree camera view.
 
 You can also load the static geometry in MuJoCo's Python viewer after building:
 

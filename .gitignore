@@ -14,6 +14,7 @@ __pycache__/
 
 # Generated MuJoCo output and logs
 /sim/*.mjb
+/sim/assets/*_surface.obj
 /MUJOCO_LOG.TXT
 
 # OS/editor files

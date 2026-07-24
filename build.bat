@@ -33,9 +33,9 @@ if errorlevel 1 goto :failed
 if errorlevel 1 goto :failed
 
 echo Checking launcher syntax...
-"%PYTHON%" -m py_compile sim\launch_simple_motor_gear_controls.py
+"%PYTHON%" -m py_compile sim\generate_room_meshes.py sim\launch_simple_motor_gear_controls.py
 if errorlevel 1 goto :failed
-"%PYTHON%" -m py_compile scripts\robolight.py scripts\test_api.py
+"%PYTHON%" -m py_compile scripts\robolight.py scripts\simple_test_api.py scripts\test_api.py
 if errorlevel 1 goto :failed
 
 echo Compiling and validating the MuJoCo model...

@@ -21,6 +21,11 @@ The camera-based pointer tracker, physical displacement detection, Hijacked
 state machine, and blinking LED are design goals. They are not yet implemented
 by this simulation or Python API.
 
+The simulation includes a movable colored sphere for developing that future
+camera tracker. Target coordinates are in centimeters in a room-fixed frame.
+Its `(0, 0, 0)` origin is the initial Arm 1 pivot, and its axes remain parallel
+to the global room axes as the turntable rotates.
+
 ## Mechanical architecture
 
 The mechanism uses one motor and a selectable transmission instead of one motor
@@ -77,8 +82,11 @@ outputs do not teleport to zero.
 
 RoboLight is currently a Windows-based MuJoCo prototype of that architecture.
 It includes six selectable follower gears, two articulated arms, spool-driven
-plate tilt, a lazy-Susan turntable, checkerboard room targets, a plate-mounted
-spotlight, and a live picture-in-picture camera aligned with the beam.
+plate tilt, a lazy-Susan turntable, checkerboard room surfaces, a movable 3D
+camera target, a plate-mounted spotlight, and a live picture-in-picture camera
+aligned with the beam.
+The room surfaces use a fine lighting mesh and subdued fill illumination so the
+spotlight footprint remains visible across different beam angles.
 
 ## Quick start
 
@@ -147,6 +155,12 @@ and shows the illuminated room surface.
 The UI also includes independent **Arm 1 length** and **Arm 2 length** entries
 and sliders. Both default to 150 mm and accept 75-300 mm.
 
+The **Camera target** controls position a room-fixed sphere in X, Y, and Z,
+measured in centimeters from the initial Arm 1 pivot. Its diameter is adjustable
+from 0.5-3 cm and it starts as a 2 cm red sphere at `(0, -6.4, 55)`. The
+**Beam angle** control sets only the full spotlight cone from 10-120 degrees.
+The camera keeps its fixed 50-degree field of view while the beam changes.
+
 Arm commands are checked against the -80 to +80 degree Arm 1 limit and the
 Arm 2-dependent upper-platform clearance. A rejected UI move leaves the
 mechanism stationary and reports the reason in the status line.
@@ -171,10 +185,13 @@ light.SetHW(
         arm1_length_mm=180,
         arm2_length_mm=140,
         arm1_limit_degrees=80,
+        beam_angle_degrees=50,
+        camera_fov_degrees=50,
     )
 )
 light.open_viewer()
 light.open_pip()
+light.set_target(0, -6.4, 55, color="red", diameter_cm=2)
 
 result = light.move(Selector.ARM1, velocity=30, degrees=20)
 if result is not MoveError.OK:
@@ -198,7 +215,8 @@ light.close_viewer()
 
 - `RoboLight` owns one MuJoCo model and its current mechanism state.
 - `HWDesc` describes the adjustable G1, G2-G6 follower, and G4/G5 spool
-  diameters, both arm lengths, and the symmetric Arm 1 travel limit.
+  diameters, both arm lengths, symmetric Arm 1 travel limit, and spotlight beam
+  angle, plus the fixed field of view specified by the selected camera.
 - `Selector` names the transmission path to engage for a move.
 - `MoveError` reports whether a high-level move completed or why it was
   rejected before motion.
@@ -226,9 +244,14 @@ G1 and follower diameters accept 35-140 mm. Spool diameter accepts 5-50 mm.
 Arm 1 and Arm 2 lengths independently accept 75-300 mm and default to 150 mm.
 `arm1_limit_degrees` accepts a symmetric limit magnitude from 1-180 degrees and
 defaults to 80 degrees.
+`beam_angle_degrees` is the full spotlight cone angle, accepts 10-120 degrees,
+and defaults to 50 degrees. It changes the illumination cone without changing
+the camera image framing. `camera_fov_degrees` independently describes the
+selected camera's fixed vertical field of view, accepts 10-170 degrees, and
+defaults to the current camera's 50-degree specification.
 Length changes preserve all current joint angles while moving the downstream
 linkage, plate, flashlight, and camera geometry. Invalid field names, non-finite
-values, and out-of-range dimensions raise an exception instead of silently
+values, and out-of-range settings raise an exception instead of silently
 changing the model.
 
 ### Moving an axis
@@ -295,7 +318,16 @@ is better for control development and automated tests.
 `get_camera()` captures that same spotlight-aligned view without requiring the
 PIP or main viewer. It returns a fresh RGB NumPy array with shape
 `(240, 320, 3)` and `uint8` pixels, ready to pass to a later Pillow, OpenCV, or
-other Python image-processing package.
+other Python image-processing package. A target configured with `set_target()`
+appears whenever it lies within that view.
+
+`set_target(x, y, z, color="red", diameter_cm=...)` positions the 3D camera
+target. Coordinates and diameter are in centimeters; `(0, 0, 0)` is the initial
+Arm 1 pivot for the current gear sizes. The coordinate axes stay parallel to
+the room axes and the target does not rotate with the mechanism. `color` may be
+`"red"`, `"green"`, `"blue"`, `"yellow"`, `"orange"`, `"cyan"`, `"magenta"`,
+or `"white"`, or an RGB/RGBA iterable using values from 0-1. The optional
+diameter must be 0.5-3 cm; omitting it preserves the previous size.
 
 `set_tilt(x_degrees=..., y_degrees=...)` provides API-only direct positioning
 for tests and initial poses; the UI intentionally exposes tilt through G4/G5
@@ -329,10 +361,10 @@ For a shorter fixed-configuration example with no command-line options, run:
 .\.venv\Scripts\python.exe .\scripts\simple_test_api.py
 ```
 
-`simple_test_api.py` contains one explicit `HWDesc`, opens the viewer and PIP,
-moves every axis once, reads positions and a camera image, checks each
-`MoveError`, and performs the physical reset. Edit that file directly to
-experiment with different hardware or moves.
+`simple_test_api.py` contains one explicit `HWDesc`, places a visible camera
+target, opens the viewer and PIP, moves every axis once, reads positions and a
+camera image, checks each `MoveError`, and performs the physical reset. Edit
+that file directly to experiment with different hardware, target, or moves.
 
 The script opens the main MuJoCo viewer plus a separate spotlight-camera PIP,
 moves G1 and all five outputs separately, leaves the outputs displaced, then
@@ -340,7 +372,8 @@ visibly performs the fixed-order physical reset and repeats the sequence. Close
 the main viewer or press Ctrl+C to stop. The test asserts requested output
 displacement and speed, translated G1 angles, gear ratios, cable-spool behavior,
 friction hold, Arm 1/platform rejections, atomic `MoveError` behavior, reset
-order, encoder zeros, fixed reset speed, and reset duration.
+order, encoder zeros, fixed reset speed, reset duration, target placement and
+color, camera visibility, and independent beam/camera angles.
 
 For a finite test without a window:
 

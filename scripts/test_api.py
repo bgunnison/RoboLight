@@ -2,6 +2,8 @@ r"""Visible RoboLight API demonstration and automated smoke test.
 
 Normal execution opens the MuJoCo simulation and a separate spotlight-camera
 PIP window so the mechanism and its light-aligned view can be watched together.
+The default 2 cm red target is visible in that view, and the headless regression
+checks target placement, size, color, and independent spotlight/camera angles.
 The script moves every selectable path separately:
 
 1. G1 by itself (no follower selected), then back to its start
@@ -78,6 +80,8 @@ DEMO_HARDWARE = HWDesc(
     arm1_length_mm=150.0,
     arm2_length_mm=150.0,
     arm1_limit_degrees=80.0,
+    beam_angle_degrees=50.0,
+    camera_fov_degrees=50.0,
 )
 DEMO_TILT_OUTPUT_PER_MOTOR = (
     DEMO_HARDWARE.g1_diameter_mm
@@ -812,6 +816,158 @@ def verify_camera_and_feedback_api(hardware: HWDesc) -> None:
     )
 
 
+def verify_target_and_beam_settings(hardware: HWDesc) -> None:
+    """Verify target settings and independent spotlight/camera angles."""
+
+    light = RoboLight(hardware)
+    default_image = light.get_camera()
+    red = default_image[:, :, 0].astype(int)
+    green = default_image[:, :, 1].astype(int)
+    blue = default_image[:, :, 2].astype(int)
+    red_target_pixels = (red > green + 30) & (red > blue + 30) & (red > 100)
+    if int(red_target_pixels.sum()) < 20:
+        raise AssertionError("default red target is not visible in the camera")
+
+    light.set_target(
+        5.0,
+        -4.0,
+        30.0,
+        color=(0.10, 0.80, 0.20),
+        diameter_cm=1.5,
+    )
+    origin_body_id = mujoco.mj_name2id(
+        light.model,
+        mujoco.mjtObj.mjOBJ_BODY,
+        "target_origin_frame",
+    )
+    target_body_id = mujoco.mj_name2id(
+        light.model,
+        mujoco.mjtObj.mjOBJ_BODY,
+        "camera_target",
+    )
+    target_geom_id = mujoco.mj_name2id(
+        light.model,
+        mujoco.mjtObj.mjOBJ_GEOM,
+        "camera_target_sphere",
+    )
+    assert_close(
+        "target local X",
+        light.model.body_pos[target_body_id, 0],
+        0.05,
+        ANGLE_TOLERANCE_DEGREES,
+    )
+    assert_close(
+        "target local Y",
+        light.model.body_pos[target_body_id, 1],
+        -0.04,
+        ANGLE_TOLERANCE_DEGREES,
+    )
+    assert_close(
+        "target local Z",
+        light.model.body_pos[target_body_id, 2],
+        0.30,
+        ANGLE_TOLERANCE_DEGREES,
+    )
+    assert_close(
+        "target radius",
+        light.model.geom_size[target_geom_id, 0],
+        0.0075,
+        ANGLE_TOLERANCE_DEGREES,
+    )
+    for component, expected in enumerate((0.10, 0.80, 0.20, 1.0)):
+        assert_close(
+            f"target color component {component}",
+            light.model.geom_rgba[target_geom_id, component],
+            expected,
+            ANGLE_TOLERANCE_DEGREES,
+        )
+
+    target_world_before_turntable = light.data.xpos[target_body_id].copy()
+    result = light.move(Selector.TURNTABLE, velocity=30.0, degrees=45.0)
+    if result is not MoveError.OK:
+        raise AssertionError(f"target room-frame test move failed: {result.value}")
+    for component, expected in enumerate(target_world_before_turntable):
+        assert_close(
+            f"room-fixed target world component {component}",
+            light.data.xpos[target_body_id, component],
+            expected,
+            ANGLE_TOLERANCE_DEGREES,
+        )
+
+    light.set_hw({"g1_diameter_mm": 80.0, "beam_angle_degrees": 70.0})
+    assert_close(
+        "target origin follows configured Arm 1 start X",
+        light.model.body_pos[origin_body_id, 0],
+        0.09,
+        ANGLE_TOLERANCE_DEGREES,
+    )
+    spotlight_id = mujoco.mj_name2id(
+        light.model,
+        mujoco.mjtObj.mjOBJ_LIGHT,
+        "plate_spotlight",
+    )
+    camera_id = mujoco.mj_name2id(
+        light.model,
+        mujoco.mjtObj.mjOBJ_CAMERA,
+        "spotlight_camera",
+    )
+    assert_close(
+        "spotlight half-angle",
+        light.model.light_cutoff[spotlight_id],
+        35.0,
+        ANGLE_TOLERANCE_DEGREES,
+    )
+    assert_close(
+        "camera FOV remains fixed when beam angle changes",
+        light.model.cam_fovy[camera_id],
+        hardware.camera_fov_degrees,
+        ANGLE_TOLERANCE_DEGREES,
+    )
+    light.set_hw({"camera_fov_degrees": 55.0})
+    assert_close(
+        "spotlight angle remains fixed when camera FOV changes",
+        light.model.light_cutoff[spotlight_id],
+        35.0,
+        ANGLE_TOLERANCE_DEGREES,
+    )
+    assert_close(
+        "configured camera FOV",
+        light.model.cam_fovy[camera_id],
+        55.0,
+        ANGLE_TOLERANCE_DEGREES,
+    )
+
+    for operation, label in (
+        (
+            lambda: light.set_target(0, 0, 20, diameter_cm=0.4),
+            "target diameter below 0.5 cm",
+        ),
+        (
+            lambda: light.set_target(0, 0, 20, color="not-a-color"),
+            "unknown target color",
+        ),
+        (
+            lambda: light.set_hw({"beam_angle_degrees": 121.0}),
+            "beam angle above 120 degrees",
+        ),
+        (
+            lambda: light.set_hw({"camera_fov_degrees": 171.0}),
+            "camera FOV above 170 degrees",
+        ),
+    ):
+        try:
+            operation()
+        except (TypeError, ValueError):
+            pass
+        else:
+            raise AssertionError(f"accepted invalid {label}")
+
+    print(
+        "Target regression: room-fixed Arm 1 origin, RGB sphere, size, camera "
+        "visibility, and independent spotlight/camera angles"
+    )
+
+
 def main() -> None:
     """Run one complete demonstration, reset, then repeat the sequence."""
 
@@ -885,6 +1041,7 @@ def main() -> None:
             verify_arm_length_hardware_settings(hardware)
             verify_move_errors_and_platform_constraint(hardware)
             verify_camera_and_feedback_api(hardware)
+            verify_target_and_beam_settings(hardware)
             verify_arm2_quarter_turns_and_short_reset(hardware)
             verify_multiturn_spool_reset(hardware)
             print("RoboLight all-axis headless smoke test passed")
