@@ -353,8 +353,10 @@ class RoboLight:
     while still advancing MuJoCo time according to the requested velocity and
     acceleration profile. Pass
     ``realtime=True`` when the call should take the corresponding wall-clock
-    duration. ``move`` uses output-side velocity and acceleration;
-    ``move_motor`` uses motor-side units.
+    duration. ``time_multiplier`` can accelerate that wall-clock pacing for
+    visualization without changing requested motion profiles or MuJoCo time.
+    ``move`` uses output-side velocity and acceleration; ``move_motor`` uses
+    motor-side units.
 
     Args:
         hwdesc: Optional initial mechanism, spotlight, and camera hardware
@@ -364,6 +366,9 @@ class RoboLight:
             joints as the standard RoboLight model.
         realtime: If true, sleep between simulation steps to match requested
             motion in wall-clock time.
+        time_multiplier: Positive wall-clock acceleration applied only when
+            ``realtime`` is true. For example, 1000 runs one simulated second
+            in approximately one millisecond, subject to rendering overhead.
         step_seconds: Maximum integration interval. The default is 1/120 s.
 
     Raises:
@@ -406,6 +411,7 @@ class RoboLight:
         *,
         model_path: str | Path = MODEL_PATH,
         realtime: bool = False,
+        time_multiplier: float = 1.0,
         step_seconds: float = 1.0 / 120.0,
     ) -> None:
         self._lock = RLock()
@@ -414,8 +420,20 @@ class RoboLight:
             raise FileNotFoundError(f"MuJoCo model not found: {self._model_path}")
         if not math.isfinite(step_seconds) or step_seconds <= 0.0:
             raise ValueError("step_seconds must be a finite value above zero")
+        try:
+            time_multiplier_value = float(time_multiplier)
+        except (TypeError, ValueError) as error:
+            raise TypeError("time_multiplier must be numeric") from error
+        if (
+            not math.isfinite(time_multiplier_value)
+            or time_multiplier_value <= 0.0
+        ):
+            raise ValueError(
+                "time_multiplier must be a finite value above zero"
+            )
 
         self.realtime = bool(realtime)
+        self.time_multiplier = time_multiplier_value
         self.step_seconds = float(step_seconds)
         if self._model_path == MODEL_PATH.resolve():
             ensure_room_meshes()
@@ -1111,7 +1129,7 @@ class RoboLight:
             self._sync_visuals()
 
             if self.realtime:
-                next_wall_time += dt
+                next_wall_time += dt / self.time_multiplier
                 delay = next_wall_time - time.perf_counter()
                 if delay > 0.0:
                     time.sleep(delay)

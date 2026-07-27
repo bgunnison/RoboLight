@@ -410,30 +410,71 @@ Run the visible camera-guided target search with:
 .\.venv\Scripts\python.exe .\scripts\acquire_target.py
 ```
 
+`SIMULATION_TIME_MULTIPLIER` near the top of `acquire_target.py` controls
+visible motor-motion pacing and currently defaults to `1000.0`. It accelerates
+wall-clock visualization without changing commanded output velocities,
+acceleration profiles, or simulated mechanism time. Set it to `1.0` for
+physical-time pacing.
+
 Each loop performs the physical encoder reset and independently randomizes the
 2 cm red sphere's X, Y, and Z coordinates. Placement bounds are read from the
 actual room base, walls, back wall, and ceiling geoms. Sphere-radius clearance
-keeps it inside that box, and exact sphere-to-cylinder clearance prevents it
-from intersecting the finite upper round table.
+keeps it inside that box. A target above the upper turntable may be anywhere
+in the room. A target below it is allowed only when the complete sphere and
+clearance margin are outside the turntable radius, so a target is never hidden
+directly underneath the platform.
 
-The search uses only `get_camera()` images. It combines coarse Arm 1, Arm 2,
-and turntable search poses with overlapping G4/Y-tilt and G5/X-tilt views,
-filters saturated-red connected components for the sphere's round shape, and
-measures a local image Jacobian to center the target from any rotated camera
-pose. Because the camera and spotlight share an axis, centering the sphere in
-the image centers the beam on it. The known random target coordinates are
-printed for demonstration but are not passed to the acquisition algorithm.
+The search uses only `get_camera()` images. Before acquisition begins, a
+planner samples valid room positions on a 2.5 cm grid and tests all candidate
+camera views against the camera FOV and MuJoCo geometry. It greedily chooses
+views by newly visible space per estimated motion second, gives extra weight
+to locations visible from very few poses, and never returns to a completed
+Arm 1/Arm 2/turntable pose. At each slow-axis pose it chooses a short path
+through only useful overlapping G4/Y-tilt and G5/X-tilt views. Arms and the
+turntable move at 45 deg/sec; the lighter tilt plate moves at 90 deg/sec,
+below its configured motor-speed limit. The plan reserves the last five
+seconds of the 60-second search for centering.
+
+The detector filters saturated-red connected components for the sphere's round
+shape and measures a local image Jacobian to center the target from any
+rotated camera pose. Because the camera and spotlight share an axis, centering
+the sphere in the image centers the beam on it. The known random target
+coordinates are printed for demonstration but are not passed to the
+acquisition algorithm.
+
+After initial centering, the script uses closed-loop image-space inverse
+kinematics to return the fast X/Y tilt plate as close as possible to 0°/0°.
+One-degree visual probes measure the local pixel response of Arm 1, Arm 2, the
+turntable, and both tilt axes. Small least-squares steps transfer pointing
+motion into the slower axes, then a new camera image verifies and re-centers
+the target before the next step. This continuously measured visual feedback
+compensates for parallax without passing target coordinates or an assumed
+depth into the acquisition algorithm.
+
 Attempts are reported as `Search 1`, `Search 2`, and so on. Successful output
 includes acquisition-only wall-clock time, measured after reset and random
 target placement. A search gives up after 60 seconds and the visible loop
 continues with a reset and a new random target. The timeout message includes
-the abandoned target's X, Y, and Z coordinates in centimeters.
+the abandoned target's X, Y, and Z coordinates in centimeters. As soon as a
+search times out or exhausts its plan, the active sphere turns green and a
+persistent green marker is left at that position in the main viewer. Later
+searches continue with a new red target, so misses accumulate into a live
+spatial plot during the run.
 
 Every run mirrors its console output and errors to a timestamped UTF-8 log in
 `scripts/logs`, such as
 `scripts/logs/acquire_target_20260726_143025_123456.log`. The directory is
 created automatically, the log path and local start time are written at the
 top of the file, and generated logs are ignored by Git.
+
+Near the top of `scripts/acquire_target.py`, `GAVE_UP_TARGET_LOG` selects a
+prior acquisition log. When that file exists, the script reads every
+`gave up after ... target X=..., Y=..., Z=... cm` line and plots the location
+as a 2 cm green sphere in the main viewer, preserving the post-run view of
+earlier searches. Set the constant to a different log or to `None` to disable
+the historical overlay. Persistent historical and live markers are
+viewer-only diagnostics: they do not appear in the PIP or `get_camera()`
+images and therefore cannot influence the red-target detector.
 
 Close the viewer or press Ctrl+C to stop. For a deterministic finite run
 without windows:
