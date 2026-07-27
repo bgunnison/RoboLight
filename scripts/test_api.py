@@ -80,6 +80,7 @@ DEMO_HARDWARE = HWDesc(
     arm1_length_mm=150.0,
     arm2_length_mm=150.0,
     arm1_limit_degrees=80.0,
+    turntable_limit_degrees=90.0,
     beam_angle_degrees=50.0,
     camera_fov_degrees=50.0,
 )
@@ -204,6 +205,7 @@ def move_ok(
     *,
     velocity: float,
     degrees: float,
+    acceleration: float | None = None,
 ) -> RoboLightState:
     """Run one high-level command and return its post-move state.
 
@@ -212,7 +214,15 @@ def move_ok(
     is an immediate, descriptive test failure.
     """
 
-    result = light.move(selector, velocity=velocity, degrees=degrees)
+    if acceleration is None:
+        result = light.move(selector, velocity=velocity, degrees=degrees)
+    else:
+        result = light.move(
+            selector,
+            velocity=velocity,
+            degrees=degrees,
+            acceleration=acceleration,
+        )
     if result is not MoveError.OK:
         raise AssertionError(
             f"{selector!s} move of {degrees:g} deg was rejected: {result.value}"
@@ -289,6 +299,23 @@ def expected_motor_delta(axis: AxisDemo, output_degrees: float, hardware: HWDesc
     return output_degrees / output_per_motor
 
 
+def motion_profile_duration(
+    degrees: float,
+    velocity: float,
+    acceleration: float,
+) -> float:
+    """Return triangular/trapezoidal duration in selected-output units."""
+
+    distance = abs(degrees)
+    peak_velocity = min(velocity, math.sqrt(distance * acceleration))
+    acceleration_time = peak_velocity / acceleration
+    acceleration_distance = (
+        0.5 * acceleration * acceleration_time * acceleration_time
+    )
+    cruise_distance = max(0.0, distance - (2.0 * acceleration_distance))
+    return (2.0 * acceleration_time) + (cruise_distance / peak_velocity)
+
+
 def show_axis_state(prefix: str, axis: AxisDemo, state: RoboLightState) -> None:
     """Print the selected output, motor position, and simulation time."""
 
@@ -327,8 +354,18 @@ def demonstrate_g1(
     """Move the common G1 input out and back without selecting a follower."""
 
     axis = AXIS_DEMOS[0]
+    expected_duration = motion_profile_duration(
+        degrees,
+        velocity,
+        light.DEFAULT_ACCELERATION_DEG_S2,
+    )
     before = light.state
-    forward = move_ok(light, axis.selector, velocity=velocity, degrees=degrees)
+    forward = move_ok(
+        light,
+        axis.selector,
+        velocity=velocity,
+        degrees=degrees,
+    )
     assert_angle("G1 forward", forward.g1_degrees, before.g1_degrees + degrees)
     assert_angle(
         "G1 get_position",
@@ -338,7 +375,7 @@ def demonstrate_g1(
     assert_close(
         "G1 forward duration",
         forward.simulation_time_seconds - before.simulation_time_seconds,
-        degrees / velocity,
+        expected_duration,
         TIME_TOLERANCE_SECONDS,
     )
     for field in HELD_OUTPUT_FIELDS:
@@ -351,12 +388,17 @@ def demonstrate_g1(
     if require_viewer and not pause_if_visible(light, pause_seconds):
         return False
 
-    reverse = move_ok(light, axis.selector, velocity=velocity, degrees=-degrees)
+    reverse = move_ok(
+        light,
+        axis.selector,
+        velocity=velocity,
+        degrees=-degrees,
+    )
     assert_angle("G1 returned", reverse.g1_degrees, before.g1_degrees)
     assert_close(
         "G1 reverse duration",
         reverse.simulation_time_seconds - forward.simulation_time_seconds,
-        degrees / velocity,
+        expected_duration,
         TIME_TOLERANCE_SECONDS,
     )
     show_axis_state("reverse", axis, reverse)
@@ -405,7 +447,11 @@ def move_outputs_away_from_reset(
         assert_close(
             f"{axis.label} output-speed duration",
             forward.simulation_time_seconds - before.simulation_time_seconds,
-            degrees / velocity,
+            motion_profile_duration(
+                degrees,
+                velocity,
+                light.DEFAULT_ACCELERATION_DEG_S2,
+            ),
             TIME_TOLERANCE_SECONDS,
         )
         assert forward.last_selectors == (axis.selector.value,)
@@ -589,6 +635,146 @@ def verify_ui_arm2_output_translation(hardware: HWDesc) -> None:
     )
     print(
         "UI translation regression: Arm 2 +90 deg commands G1 -140.625 deg"
+    )
+
+
+def verify_acceleration_profiles(hardware: HWDesc) -> None:
+    """Verify motor-controller mock timing and acceleration validation."""
+
+    trapezoidal = RoboLight(hardware)
+    before = trapezoidal.state
+    result = trapezoidal.move(
+        Selector.G1,
+        velocity=20.0,
+        degrees=60.0,
+        acceleration=20.0,
+    )
+    if result is not MoveError.OK:
+        raise AssertionError(f"trapezoidal move failed: {result.value}")
+    assert_close(
+        "trapezoidal profile duration",
+        trapezoidal.state.simulation_time_seconds
+        - before.simulation_time_seconds,
+        motion_profile_duration(60.0, 20.0, 20.0),
+        TIME_TOLERANCE_SECONDS,
+    )
+
+    triangular = RoboLight(hardware)
+    before = triangular.state
+    result = triangular.move(
+        Selector.G1,
+        velocity=20.0,
+        degrees=1.0,
+        acceleration=20.0,
+    )
+    if result is not MoveError.OK:
+        raise AssertionError(f"triangular move failed: {result.value}")
+    assert_close(
+        "triangular profile duration",
+        triangular.state.simulation_time_seconds
+        - before.simulation_time_seconds,
+        motion_profile_duration(1.0, 20.0, 20.0),
+        TIME_TOLERANCE_SECONDS,
+    )
+
+    before_invalid = triangular.state.to_dict()
+    invalid = triangular.move(
+        Selector.G1,
+        velocity=20.0,
+        degrees=1.0,
+        acceleration=0.0,
+    )
+    if invalid is not MoveError.INVALID_ACCELERATION:
+        raise AssertionError(
+            f"expected invalid_acceleration, got {invalid.value}"
+        )
+    if triangular.state.to_dict() != before_invalid:
+        raise AssertionError("invalid acceleration changed mechanism state")
+
+    print(
+        "Motion-profile regression: motor-controller mock handles triangular "
+        "and trapezoidal acceleration"
+    )
+
+
+def verify_turntable_limit(hardware: HWDesc) -> None:
+    """Verify the configurable symmetric turntable travel boundary."""
+
+    light = RoboLight(hardware)
+    if light.hwdesc.turntable_limit_degrees != 90.0:
+        raise AssertionError(
+            f"unexpected turntable limit: {light.hwdesc.turntable_limit_degrees}"
+        )
+
+    move_ok(
+        light,
+        Selector.TURNTABLE,
+        velocity=30.0,
+        degrees=hardware.turntable_limit_degrees,
+    )
+    assert_angle(
+        "turntable positive boundary",
+        light.get_position(Selector.TURNTABLE),
+        hardware.turntable_limit_degrees,
+    )
+    before_rejection = light.state.to_dict()
+    result = light.move(Selector.TURNTABLE, velocity=30.0, degrees=0.25)
+    if result is not MoveError.TURNTABLE_LIMIT:
+        raise AssertionError(
+            f"expected turntable_limit, got {result.value}"
+        )
+    if light.state.to_dict() != before_rejection:
+        raise AssertionError("rejected turntable move changed mechanism state")
+
+    move_ok(
+        light,
+        Selector.TURNTABLE,
+        velocity=30.0,
+        degrees=-(2.0 * hardware.turntable_limit_degrees),
+    )
+    assert_angle(
+        "turntable negative boundary",
+        light.get_position(Selector.TURNTABLE),
+        -hardware.turntable_limit_degrees,
+    )
+    before_rejection = light.state.to_dict()
+    result = light.move(Selector.TURNTABLE, velocity=30.0, degrees=-0.25)
+    if result is not MoveError.TURNTABLE_LIMIT:
+        raise AssertionError(
+            f"expected turntable_limit, got {result.value}"
+        )
+    if light.state.to_dict() != before_rejection:
+        raise AssertionError("rejected turntable move changed mechanism state")
+
+    light.reset()
+    updated = light.set_hw({"turntable_limit_degrees": 45.0})
+    if updated.turntable_limit_degrees != 45.0:
+        raise AssertionError(f"unexpected updated turntable limit: {updated}")
+    move_ok(light, Selector.TURNTABLE, velocity=30.0, degrees=45.0)
+    before_rejection = light.state.to_dict()
+    result = light.move(Selector.TURNTABLE, velocity=30.0, degrees=1.0)
+    if result is not MoveError.TURNTABLE_LIMIT:
+        raise AssertionError(
+            f"expected configured turntable_limit, got {result.value}"
+        )
+    if light.state.to_dict() != before_rejection:
+        raise AssertionError(
+            "configured turntable limit rejection changed mechanism state"
+        )
+
+    for invalid_limit in (0.0, 181.0):
+        try:
+            light.set_hw({"turntable_limit_degrees": invalid_limit})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(
+                f"accepted invalid turntable limit {invalid_limit:g}"
+            )
+
+    print(
+        "Turntable regression: HWDesc enforces the configured symmetric "
+        "+/-90 deg travel limit atomically"
     )
 
 
@@ -1038,6 +1224,8 @@ def main() -> None:
 
         if args.headless:
             verify_ui_arm2_output_translation(hardware)
+            verify_acceleration_profiles(hardware)
+            verify_turntable_limit(hardware)
             verify_arm_length_hardware_settings(hardware)
             verify_move_errors_and_platform_constraint(hardware)
             verify_camera_and_feedback_api(hardware)

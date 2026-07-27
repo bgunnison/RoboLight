@@ -17,9 +17,10 @@ until the arm is reset. An axis that is not moving is held by friction rather
 than a rigid powered lock. This makes the mechanism compliant and allows the
 user to reposition it without fighting a continuously energized motor.
 
-The camera-based pointer tracker, physical displacement detection, Hijacked
-state machine, and blinking LED are design goals. They are not yet implemented
-by this simulation or Python API.
+The production pointer tracker, physical displacement detection, Hijacked state
+machine, and blinking LED are design goals. They are not yet implemented by the
+simulation or core Python API. The `acquire_target.py` example does implement a
+first camera-guided loop for the simulated red sphere.
 
 The simulation includes a movable colored sphere for developing that future
 camera tracker. Target coordinates are in centimeters in a room-fixed frame.
@@ -63,6 +64,9 @@ is at reset. At other Arm 2 angles, the controller uses the current two-link
 pose and configured arm lengths to determine whether Arm 1, Arm 2, or the tilt
 plate would cross the platform. It checks the complete motion path and rejects
 the command before the motor turns if any point would collide.
+The G6 turntable also has a configurable symmetric travel range. It defaults to
+-90 through +90 degrees, and high-level API moves that would cross either
+endpoint are rejected before motion.
 
 Arm 1 and Arm 2 both default to 150 mm and are independently adjustable from
 75 to 300 mm. Resizing Arm 1 moves its end pivot and belt-driven TG6 assembly;
@@ -185,6 +189,7 @@ light.SetHW(
         arm1_length_mm=180,
         arm2_length_mm=140,
         arm1_limit_degrees=80,
+        turntable_limit_degrees=90,
         beam_angle_degrees=50,
         camera_fov_degrees=50,
     )
@@ -193,7 +198,12 @@ light.open_viewer()
 light.open_pip()
 light.set_target(0, -6.4, 55, color="red", diameter_cm=2)
 
-result = light.move(Selector.ARM1, velocity=30, degrees=20)
+result = light.move(
+    Selector.ARM1,
+    velocity=30,
+    degrees=20,
+    acceleration=100,
+)
 if result is not MoveError.OK:
     raise RuntimeError(f"Arm 1 move rejected: {result.value}")
 
@@ -215,8 +225,9 @@ light.close_viewer()
 
 - `RoboLight` owns one MuJoCo model and its current mechanism state.
 - `HWDesc` describes the adjustable G1, G2-G6 follower, and G4/G5 spool
-  diameters, both arm lengths, symmetric Arm 1 travel limit, and spotlight beam
-  angle, plus the fixed field of view specified by the selected camera.
+  diameters, both arm lengths, symmetric Arm 1 and turntable travel limits, and
+  spotlight beam angle, plus the fixed field of view specified by the selected
+  camera.
 - `Selector` names the transmission path to engage for a move.
 - `MoveError` reports whether a high-level move completed or why it was
   rejected before motion.
@@ -244,6 +255,8 @@ G1 and follower diameters accept 35-140 mm. Spool diameter accepts 5-50 mm.
 Arm 1 and Arm 2 lengths independently accept 75-300 mm and default to 150 mm.
 `arm1_limit_degrees` accepts a symmetric limit magnitude from 1-180 degrees and
 defaults to 80 degrees.
+`turntable_limit_degrees` accepts a symmetric limit magnitude from 1-180
+degrees and defaults to 90 degrees.
 `beam_angle_degrees` is the full spotlight cone angle, accepts 10-120 degrees,
 and defaults to 50 degrees. It changes the illumination cone without changing
 the camera image framing. `camera_fov_degrees` independently describes the
@@ -256,20 +269,29 @@ changing the model.
 
 ### Moving an axis
 
-`move(selector, velocity, degrees)` commands one selected output in mechanism
-coordinates:
+`move(selector, velocity, degrees, acceleration=10000)` commands one selected
+output in mechanism coordinates:
 
 - `selector` chooses exactly one output. It can be a `Selector`, an API name
   such as `"arm1"`, or a UI label such as `"G4 -> Y tilt"`.
 - `velocity` is the positive speed of that selected output in degrees per
   second.
+- `acceleration` is the positive acceleration of that selected output in
+  degrees per second squared. Its high 10,000 deg/s² default preserves simple
+  near-immediate speed changes when callers do not need a slower ramp.
 - `degrees` is the selected output's signed relative displacement from -360
   through +360. Its sign controls output direction; it is not an absolute
   target. X/Y tilt moves must also leave the plate within its -45 to +45 degree
-  joint range.
-- The API translates output angle and speed into G1 motor commands. It accounts
-  for external-mesh direction reversal, the configured G1-to-follower diameter
-  ratio, and—for X/Y tilt—the spool radius and 25 mm cable attachment lever.
+  joint range, and turntable moves must remain within its configured symmetric
+  travel range.
+- The API translates output angle, speed, and acceleration into G1 motor
+  commands. It accounts for external-mesh direction reversal, the configured
+  G1-to-follower diameter ratio, and—for X/Y tilt—the spool radius and 25 mm
+  cable attachment lever.
+- A private motor-controller mock beneath the public API executes a triangular
+  profile when a move is too short to reach the requested velocity and a
+  trapezoidal profile otherwise. MuJoCo remains a kinematic visualization and
+  does not model motor torque or actuator physics.
 - If the required motor angle exceeds 360 degrees, the controller transparently
   executes adjacent legal motor-move chunks. A request that would require more
   than 720 motor-deg/s is rejected.
@@ -277,35 +299,40 @@ coordinates:
   defaults to -80 through +80 degrees. Arm 1 and Arm 2 moves are sampled across
   their full swept path against the infinite upper-platform plane using both
   configured arm lengths and the current Arm 2 position.
+- The turntable must remain within its configured symmetric travel limit, which
+  defaults to -90 through +90 degrees.
 - The call blocks until a legal move completes and returns `MoveError.OK`.
   Any other `MoveError` means no part of the command moved. Read `light.state`
   after success to obtain a `RoboLightState`.
 
 For example, `move(Selector.ARM1, velocity=30, degrees=20)` moves Arm 1 by
-positive 20 degrees at 30 output-deg/s. With the default 64 mm G1 and 100 mm
-follower, the hidden translation commands G1 by -31.25 degrees at
-46.875 motor-deg/s.
+positive 20 degrees at up to 30 output-deg/s using the default acceleration.
+With the default 64 mm G1 and 100 mm follower, the hidden translation commands
+G1 by -31.25 degrees at up to 46.875 motor-deg/s.
 
 `MoveError` values are `OK`, `INVALID_SELECTOR`, `INVALID_DEGREES`,
-`INVALID_VELOCITY`, `MOTOR_SPEED_LIMIT`, `TILT_LIMIT`, `ARM1_LIMIT`,
-`PLATFORM_COLLISION`, `LOST_STEPS`, and `HIJACKED`. The last two are reserved
-for encoder/manual-movement feedback from the physical robot; the simulation
-defines them for API compatibility but does not emit them yet.
+`INVALID_VELOCITY`, `INVALID_ACCELERATION`, `MOTOR_SPEED_LIMIT`, `TILT_LIMIT`,
+`ARM1_LIMIT`, `TURNTABLE_LIMIT`, `PLATFORM_COLLISION`, `LOST_STEPS`, and
+`HIJACKED`. The last two are reserved for encoder/manual-movement feedback from
+the physical robot; the simulation defines them for API compatibility but does
+not emit them yet.
 
 `get_position(selector)` returns the current selected-output angle in degrees.
 G1 is cumulative; Arm 1, Arm 2, and turntable positions are cyclic signed
 angles; X/Y selectors return plate tilt. It requires exactly one selector.
 
-`move_motor(selector, velocity, degrees)` is the lower layer. Its `degrees` and
-`velocity` are direct G1/motor units, matching the UI when **Rotation targets
-selected output** is unchecked. It also accepts selector iterables or `"all"`
-for simulation-only multi-path experiments. Selected outputs then follow their
-raw mechanical ratios, while unselected outputs hold their positions. This
-low-level method intentionally bypasses the Arm 1 and platform guards; use
-`move()` for normal controller commands.
+`move_motor(selector, velocity, degrees, acceleration=...)` is the lower layer.
+Its motion units are direct G1/motor units, matching the UI when **Rotation
+targets selected output** is unchecked. Its optional acceleration is also in
+motor units; omitting it retains constant-speed compatibility. It accepts
+selector iterables or `"all"` for simulation-only multi-path experiments.
+Selected outputs then follow their raw mechanical ratios, while unselected
+outputs hold their positions. This low-level method intentionally bypasses the
+Arm 1, platform, and turntable guards; use `move()` for normal controller
+commands.
 
 Moves run without wall-clock delay by default, but MuJoCo simulation time still
-advances according to distance and velocity. Construct with
+advances according to the distance, velocity, and acceleration profile. Construct with
 `RoboLight(realtime=True)` to pace calls in real time. That option is useful for
 demonstrations, especially with `open_viewer()`. The viewer is synchronized
 after every motion step and after hardware, direct-tilt, and reset operations.
@@ -345,9 +372,11 @@ reset moves instead of being cleared. Hardware dimensions remain unchanged.
 The current snapshot is always available as `light.state`, and any returned
 snapshot can be converted with `state.to_dict()`.
 
-The API currently controls the kinematic mechanism only. It does not yet detect
-a physical manual displacement, enter Hijacked mode, blink an LED, find a
-wearable pointer, or close the camera-tracking loop.
+The core API controls the kinematic mechanism and supplies camera images; it
+does not autonomously detect targets. The `acquire_target.py` example builds a
+simple red-sphere detector and camera-centering loop above that API. Physical
+manual displacement, Hijacked mode, its blinking LED, and wearable-pointer
+recognition remain unimplemented.
 
 Run the visible API demonstration with:
 
@@ -355,25 +384,69 @@ Run the visible API demonstration with:
 .\.venv\Scripts\python.exe .\scripts\test_api.py
 ```
 
-For a shorter fixed-configuration example with no command-line options, run:
+For a continuously randomized example with no command-line options, run:
 
 ```powershell
 .\.venv\Scripts\python.exe .\scripts\simple_test_api.py
 ```
 
 `simple_test_api.py` contains one explicit `HWDesc`, places a visible camera
-target, opens the viewer and PIP, moves every axis once, reads positions and a
-camera image, checks each `MoveError`, and performs the physical reset. Edit
-that file directly to experiment with different hardware, target, or moves.
+target, opens the viewer and PIP, and performs a startup physical reset. It then
+runs until the viewer closes or Ctrl+C is pressed. Each loop randomly selects
+G1, Arm 1, Arm 2, X tilt, Y tilt, or the turntable, chooses a whole-number
+selected-output velocity from 10-60 deg/sec and a signed displacement from
+5-30 degrees, performs that single move, and acquires a camera image. Simple
+joint moves are chosen inside their configured limits; any geometry-dependent
+rejection is reported and followed by a physical reset. Console messages report
+what occurred, for example `Arm1 moved 30 deg at 42 deg/sec in 0.7 sec` and
+`Camera image 320x240 acquired in 0.200 sec`. Edit that file directly to change
+the hardware or random ranges.
 
-The script opens the main MuJoCo viewer plus a separate spotlight-camera PIP,
-moves G1 and all five outputs separately, leaves the outputs displaced, then
-visibly performs the fixed-order physical reset and repeats the sequence. Close
-the main viewer or press Ctrl+C to stop. The test asserts requested output
-displacement and speed, translated G1 angles, gear ratios, cable-spool behavior,
-friction hold, Arm 1/platform rejections, atomic `MoveError` behavior, reset
-order, encoder zeros, fixed reset speed, reset duration, target placement and
-color, camera visibility, and independent beam/camera angles.
+### Camera target acquisition
+
+Run the visible camera-guided target search with:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\acquire_target.py
+```
+
+Each loop performs the physical encoder reset and independently randomizes the
+2 cm red sphere's X, Y, and Z coordinates. Placement bounds are read from the
+actual room base, walls, back wall, and ceiling geoms. Sphere-radius clearance
+keeps it inside that box, and exact sphere-to-cylinder clearance prevents it
+from intersecting the finite upper round table.
+
+The search uses only `get_camera()` images. It combines coarse Arm 1, Arm 2,
+and turntable search poses with overlapping G4/Y-tilt and G5/X-tilt views,
+filters saturated-red connected components for the sphere's round shape, and
+measures a local image Jacobian to center the target from any rotated camera
+pose. Because the camera and spotlight share an axis, centering the sphere in
+the image centers the beam on it. The known random target coordinates are
+printed for demonstration but are not passed to the acquisition algorithm.
+Attempts are reported as `Search 1`, `Search 2`, and so on. Successful output
+includes acquisition-only wall-clock time, measured after reset and random
+target placement. A search gives up after 60 seconds and the visible loop
+continues with a reset and a new random target. The timeout message includes
+the abandoned target's X, Y, and Z coordinates in centimeters.
+
+Every run mirrors its console output and errors to a timestamped UTF-8 log in
+`scripts/logs`, such as
+`scripts/logs/acquire_target_20260726_143025_123456.log`. The directory is
+created automatically, the log path and local start time are written at the
+top of the file, and generated logs are ignored by Git.
+
+Close the viewer or press Ctrl+C to stop. For a deterministic finite run
+without windows:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\acquire_target.py --headless --cycles 5 --seed 0
+```
+
+The test asserts requested output displacement, speed, and acceleration-profile
+timing, translated G1 angles, gear ratios, cable-spool behavior, friction hold,
+Arm 1/platform and turntable-limit rejections, atomic `MoveError` behavior,
+reset order, encoder zeros, fixed reset speed, reset duration, target placement
+and color, camera visibility, and independent beam/camera angles.
 
 For a finite test without a window:
 
@@ -381,17 +454,20 @@ For a finite test without a window:
 .\.venv\Scripts\python.exe .\scripts\test_api.py --headless --cycles 1
 ```
 
-Additional options such as `--velocity`, `--degrees`, `--pause`, and `--cycles`
-adjust the demonstration; run with `--help` for details.
+Use `--velocity` to change the structured demonstration's selected-output
+speed. Options such as `--degrees`, `--pause`, and `--cycles` also adjust the
+demonstration; run with `--help` for details.
 
 ## Repository layout
 
 - `sim/simple_motor_gear.xml` — MuJoCo scene and mechanism geometry, including the lower turntable and upper arm-constraint plate
 - `sim/launch_simple_motor_gear_controls.py` — kinematic controls, UI, viewer, and spotlight PIP
 - `sim/assets/` — checkerboard wall textures
+- `sim/generate_room_meshes.py` — generated lighting grids for the checkerboard room
 - `sim/build_model.py` — deterministic model compile and validation step
 - `scripts/robolight.py` — reusable `RoboLight` control API
-- `scripts/simple_test_api.py` — minimal fixed-configuration visible API example
+- `scripts/acquire_target.py` — camera-guided random-target search and centering loop
+- `scripts/simple_test_api.py` — continuous randomized visible API example
 - `scripts/test_api.py` — API usage example and smoke test
 - `sim/README.md` — detailed mechanism and control behavior
 - `single_joint_prototype.md` — mechanical prototype notes and BOM

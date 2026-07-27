@@ -16,6 +16,8 @@ __pycache__/
 /sim/*.mjb
 /sim/assets/*_surface.obj
 /MUJOCO_LOG.TXT
+/scripts/logs/*.log
+!/scripts/logs/.gitkeep
 
 # OS/editor files
 .DS_Store

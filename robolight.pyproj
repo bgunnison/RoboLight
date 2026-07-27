@@ -4,7 +4,7 @@
     <SchemaVersion>2.0</SchemaVersion>
     <ProjectGuid>a67048c7-440b-446f-89b8-6c4f5508a4e2</ProjectGuid>
     <ProjectHome>.</ProjectHome>
-    <StartupFile>scripts\test_api.py</StartupFile>
+    <StartupFile>scripts\acquire_target.py</StartupFile>
     <SearchPath>
     </SearchPath>
     <WorkingDirectory>.</WorkingDirectory>
@@ -21,7 +21,9 @@
     <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="scripts\acquire_target.py" />
     <Compile Include="scripts\robolight.py" />
+    <Compile Include="scripts\simple_test_api.py" />
     <Compile Include="scripts\test_api.py" />
   </ItemGroup>
   <ItemGroup>
