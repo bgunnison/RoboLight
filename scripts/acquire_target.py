@@ -727,6 +727,9 @@ def rebalance_centered_target(
     light: RoboLight,
     initial_result: AcquisitionResult,
     deadline: float,
+    *,
+    max_iterations: int = MAX_REBALANCE_ITERATIONS,
+    announce: bool = True,
 ) -> AcquisitionResult:
     """Unload X/Y tilt into the arms and turntable using camera feedback.
 
@@ -744,9 +747,14 @@ def rebalance_centered_target(
         Selector.ARM2,
         Selector.TURNTABLE,
     )
-    print("  rebalancing plate tilt with closed-loop camera feedback")
 
-    for iteration in range(1, MAX_REBALANCE_ITERATIONS + 1):
+    def report(message: str) -> None:
+        if announce:
+            print(message)
+
+    report("  rebalancing plate tilt with closed-loop camera feedback")
+
+    for iteration in range(1, max_iterations + 1):
         require_search_time(deadline)
         current_x = light.get_position(Selector.X_TILT)
         current_y = light.get_position(Selector.Y_TILT)
@@ -770,11 +778,13 @@ def rebalance_centered_target(
                 slow_columns.append(column)
 
         if len(slow_columns) < 2:
-            print("  visual rebalance stopped: fewer than two movable slow axes")
+            report("  visual rebalance stopped: fewer than two movable slow axes")
             break
         slow_jacobian = np.column_stack(slow_columns)
         if np.linalg.matrix_rank(slow_jacobian) < 2:
-            print("  visual rebalance stopped: slow-axis image response is singular")
+            report(
+                "  visual rebalance stopped: slow-axis image response is singular"
+            )
             break
 
         tilt_jacobian, probe_images = measure_image_jacobian(
@@ -784,7 +794,9 @@ def rebalance_centered_target(
         )
         images_acquired += probe_images
         if tilt_jacobian is None:
-            print("  visual rebalance stopped: tilt response could not be measured")
+            report(
+                "  visual rebalance stopped: tilt response could not be measured"
+            )
             break
 
         tilt_scale = min(
@@ -840,27 +852,29 @@ def rebalance_centered_target(
 
             rejected_selector = usable_selectors[rejected_index]
             active_indices.remove(rejected_index)
-            print(
+            report(
                 f"  {rejected_selector.value} constrained "
                 f"({rejected_result.value}); retrying visual rebalance "
                 "without it"
             )
 
         if completed_moves is None:
-            print(
+            report(
                 "  visual rebalance stopped: the remaining slow axes cannot "
                 "span the image correction"
             )
             return replace(result, images_acquired=images_acquired)
 
         if not completed_moves:
-            print("  visual rebalance stopped: no slow-axis correction remains")
+            report(
+                "  visual rebalance stopped: no slow-axis correction remains"
+            )
             return replace(result, images_acquired=images_acquired)
 
         for selector, move_degrees in completed_moves:
             if not math.isfinite(move_degrees):
                 restore_slow_moves(light, completed_moves)
-                print(
+                report(
                     "  visual rebalance stopped: non-finite slow-axis "
                     "correction"
                 )
@@ -882,7 +896,7 @@ def rebalance_centered_target(
         if detection is None:
             move_to_tilt(light, current_x, current_y)
             restore_slow_moves(light, completed_moves)
-            print("  visual rebalance stopped before the target left view")
+            report("  visual rebalance stopped before the target left view")
             return replace(result, images_acquired=images_acquired)
 
         centered_result, images_acquired = center_visible_target(
@@ -895,7 +909,9 @@ def rebalance_centered_target(
         if centered_result is None:
             move_to_tilt(light, current_x, current_y)
             restore_slow_moves(light, completed_moves)
-            print("  visual rebalance stopped because centering did not converge")
+            report(
+                "  visual rebalance stopped because centering did not converge"
+            )
             return replace(result, images_acquired=images_acquired)
 
         new_tilt_norm = math.hypot(
@@ -905,14 +921,16 @@ def rebalance_centered_target(
         if new_tilt_norm >= current_tilt_norm - 0.05:
             move_to_tilt(light, current_x, current_y)
             restore_slow_moves(light, completed_moves)
-            print("  visual rebalance stopped at the best measured plate tilt")
+            report(
+                "  visual rebalance stopped at the best measured plate tilt"
+            )
             return replace(result, images_acquired=images_acquired)
 
         result = replace(
             centered_result,
             images_acquired=images_acquired,
         )
-        print(
+        report(
             f"  visual rebalance {iteration}: "
             f"X tilt={result.x_tilt_degrees:.1f} deg, "
             f"Y tilt={result.y_tilt_degrees:.1f} deg"

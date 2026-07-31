@@ -411,7 +411,7 @@ Run the visible camera-guided target search with:
 ```
 
 `SIMULATION_TIME_MULTIPLIER` near the top of `acquire_target.py` controls
-visible motor-motion pacing and currently defaults to `1000.0`. It accelerates
+visible motor-motion pacing and currently defaults to `10.0`. It accelerates
 wall-clock visualization without changing commanded output velocities,
 acceleration profiles, or simulated mechanism time. Set it to `1.0` for
 physical-time pacing.
@@ -483,6 +483,52 @@ without windows:
 .\.venv\Scripts\python.exe .\scripts\acquire_target.py --headless --cycles 5 --seed 0
 ```
 
+### Continuous target tracking
+
+Run the visible tracking demonstration with:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\track_target.py
+```
+
+The script begins with a physical reset and the same camera-only acquisition
+used by `acquire_target.py`. After lock, the red sphere moves at 2 cm/sec
+toward a sequence of random X/Y/Z waypoints. Every motion step is checked
+against the room and upper-turntable constraints. The known target coordinates
+are used only to animate the simulated sphere; aiming decisions use
+`get_camera()` images.
+
+Fast X/Y tilt corrections keep the spot centered. When plate tilt reaches
+8 degrees, one closed-loop visual-IK step lets the arms and turntable begin
+following without interrupting lock. This produces the peripheral
+notice-and-attend behavior while avoiding a long full-body reposition on every
+camera frame.
+
+If detection or centering is lost, slow target motion freezes immediately.
+RoboLight physically resets and reruns the acquisition scan while the target
+stays stationary. If a complete scan cannot acquire it, the target is moved
+to another random valid X/Y/Z location and another scan begins. This repeats
+until acquisition succeeds; slow target motion then resumes. Every loss also
+leaves a persistent green sphere at the lost position in the main viewer.
+These markers are viewer-only and cannot affect the camera detector. The loss
+log records the green marker's target X/Y/Z together with Arm 1, Arm 2,
+turntable, X-tilt, and Y-tilt positions before reset. Those values preserve
+the complete mechanism pose needed to reconstruct the camera-to-target
+relationship in a later replay or analysis pass.
+Console output is mirrored to timestamped `scripts/logs/track_target_*.log`
+files.
+
+Edit the constants near the top of `track_target.py` to change target speed,
+update period, rebalancing threshold, or mechanism time multiplier. The target
+does not use the time multiplier: it advances by `TARGET_SPEED_CM_S`
+multiplied by `TRACK_UPDATE_SECONDS` per tracking update. The multiplier
+accelerates only RoboLight motor-motion pacing. Run the finite deterministic
+smoke test with:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\track_target.py --headless --steps 30 --seed 0
+```
+
 The test asserts requested output displacement, speed, and acceleration-profile
 timing, translated G1 angles, gear ratios, cable-spool behavior, friction hold,
 Arm 1/platform and turntable-limit rejections, atomic `MoveError` behavior,
@@ -508,6 +554,7 @@ demonstration; run with `--help` for details.
 - `sim/build_model.py` — deterministic model compile and validation step
 - `scripts/robolight.py` — reusable `RoboLight` control API
 - `scripts/acquire_target.py` — camera-guided random-target search and centering loop
+- `scripts/track_target.py` — continuous camera tracking with stationary-target reacquisition
 - `scripts/simple_test_api.py` — continuous randomized visible API example
 - `scripts/test_api.py` — API usage example and smoke test
 - `sim/README.md` — detailed mechanism and control behavior
